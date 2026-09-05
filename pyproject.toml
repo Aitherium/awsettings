@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awsettings"
+version = "0.1.0"
+description = "Your agent's permissions and config, following you to the next machine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# httpx is OPTIONAL on purpose: the default backend is a plain file in a folder you
+# already sync, so the brick installs and works with no network stack at all. It is
+# imported inside the http backend only. A brick that needs an account to try is a
+# brick most people never try.
+dependencies = []
+
+[project.optional-dependencies]
+http = ["httpx>=0.25.0"]
+dev = ["pytest>=7.0", "httpx>=0.25.0"]
+
+[project.scripts]
+awsettings = "awsettings.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Aitherium/awsettings"
+Documentation = "https://github.com/Aitherium/awsettings#readme"
+Repository = "https://github.com/Aitherium/awsettings.git"
+Issues = "https://github.com/Aitherium/awsettings/issues"
+
+[tool.setuptools]
+packages = ["awsettings"]
+license-files = ["LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# The monorepo quality gate runs `ruff --isolated` from the REPO ROOT, where
+# first-party detection cannot see this directory, so it files `awsettings` as
+# third-party. Rooted here, ruff would detect it as first-party and demand the
+# OPPOSITE import layout -- two invocations giving mutually exclusive verdicts on the
+# same file, each `--fix` undoing the other. Empty `src` disables path-based detection
+# so the local run agrees with the gate that actually blocks a merge.
+src = []
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501", "E402", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

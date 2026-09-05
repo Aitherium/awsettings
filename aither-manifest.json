@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "name": "awsettings",
+  "description": "Your agent's permissions and config, following you to the next machine.",
+  "url": "https://aitherium.github.io/awsettings/",
+  "repository": "https://github.com/Aitherium/awsettings",
+  "kind": "tool",
+  "status": "unpublished",
+  "adopt": "Point it at your agent's settings on one machine and have them show up on the next one you open.",
+  "pairs_with": [
+    "awdk",
+    "awsh",
+    "awnix",
+    "awiam",
+    "awm",
+    "awseal",
+    "awshare"
+  ],
+  "includes": []
+}
