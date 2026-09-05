@@ -529,12 +529,9 @@ header .wrap>*:nth-child(6){animation-delay:.25s}
 <p><strong>Your agent's permissions and config, following you to the next machine.</strong></p>
 
 <pre><code>```bash
-pip install git+https://github.com/Aitherium/awsettings.git
+pip install awsettings
 awsettings hook install     # and never think about it again
 </code></pre>
-<p><sub>Installed from git until the first PyPI release — <code>pip install awsettings</code> is
-not live yet, and advertising an install that 404s is worse than a longer one.
-This line goes when the release does.</sub></p>
 <p>Your coding agent keeps its permission allowlist, its enabled tool servers and its
 hooks in a local file. Open a session on a second machine — a laptop, a shell on a
 server, a dev container your phone just spun up — and none of it is there.</p>
