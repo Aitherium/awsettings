@@ -3,9 +3,13 @@
 **Your agent's permissions and config, following you to the next machine.**
 
 ```bash
-pip install awsettings
+pip install git+https://github.com/Aitherium/awsettings.git
 awsettings hook install     # and never think about it again
 ```
+
+<sub>Installed from git until the first PyPI release — `pip install awsettings` is
+not live yet, and advertising an install that 404s is worse than a longer one.
+This line goes when the release does.</sub>
 
 Your coding agent keeps its permission allowlist, its enabled tool servers and its
 hooks in a local file. Open a session on a second machine — a laptop, a shell on a
