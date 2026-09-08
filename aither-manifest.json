@@ -5,7 +5,7 @@
   "url": "https://aitherium.github.io/awsettings/",
   "repository": "https://github.com/Aitherium/awsettings",
   "kind": "tool",
-  "status": "unpublished",
+  "status": "public",
   "adopt": "Point it at your agent's settings on one machine and have them show up on the next one you open.",
   "pairs_with": [
     "awdk",
@@ -16,5 +16,15 @@
     "awseal",
     "awshare"
   ],
-  "includes": []
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 16,
+      "as_of": "2026-09-06T20:01:00-07:00"
+    },
+    "tests": {
+      "value": 1,
+      "as_of": "2026-09-06T20:01:00-07:00"
+    }
+  }
 }
