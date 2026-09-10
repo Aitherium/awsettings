@@ -14,17 +14,18 @@
     "awiam",
     "awm",
     "awseal",
-    "awshare"
+    "awshare",
+    "awresume"
   ],
   "includes": [],
   "metrics": {
     "files": {
-      "value": 19,
-      "as_of": "2026-09-08T10:37:36-07:00"
+      "value": 18,
+      "as_of": "2026-09-10T14:46:52-07:00"
     },
     "tests": {
-      "value": 1,
-      "as_of": "2026-09-08T10:37:36-07:00"
+      "value": 2,
+      "as_of": "2026-09-10T14:46:52-07:00"
     }
   }
 }
