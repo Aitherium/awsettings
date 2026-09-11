@@ -5,6 +5,9 @@
     awsettings push                   local  -> remote (credentials stripped)
     awsettings hook install           run it automatically from now on
     awsettings hook uninstall
+    awsettings backends               which model backends this box can launch
+    awsettings backends --probe       ...and which of them will actually answer
+    awsettings preflight <profile>    can a session launch on this one? 0 yes 1 no 2 unsure
     awsettings --self-test
 
 Exit **0** did the thing · **1** a rule refused it · **2** could not judge — the
@@ -22,6 +25,13 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .backends import CouldNotJudgeError as BackendsCouldNotJudgeError
+from .backends import ProbeVerdict as BackendProbeVerdict
+from .backends import discover as discover_backends
+from .backends import load_profiles_for_probe, vault_lookup
+from .backends import probe as probe_backend
+from .backends import probe_self_test as backends_probe_self_test
+from .backends import self_test as backends_self_test
 from .core import SECRET_KEYS, diff_summary, merge, redact
 from .hooks import install_to, installed, uninstall_from
 from .profile import resolve
@@ -130,6 +140,145 @@ def cmd_push(args) -> int:
         if dropped:
             print("  kept local: " + ", ".join(dropped))
     return 0
+
+
+def cmd_backends(args) -> int:
+    """Report which model backends this machine can launch a session on.
+
+    READ-ONLY, and deliberately so. A backend override is session-scoped by
+    design: it lives in the environment of the process being launched and
+    nowhere else. This command therefore prints how to launch and changes
+    nothing -- `awsettings` syncs profile DEFINITIONS between machines, never an
+    active override, and conflating the two is how a backend outlives the
+    session that wanted it.
+    """
+    try:
+        found = discover_backends()
+    except BackendsCouldNotJudgeError as exc:
+        # A present-but-unreadable profile file is not an empty roster.
+        print(f"DEAD: {exc}")
+        return 2
+
+    probes: dict = {}
+    if args.probe:
+        # LAUNCHABLE and WORKING are different questions and the second one costs
+        # a request, so it is opt-in. Without it this command would either be slow
+        # for callers that only want the roster, or would answer the easy question
+        # while looking like it answered the hard one.
+        profiles = load_profiles_for_probe()
+        for backend in found:
+            if not backend.launchable:
+                continue
+            if not backend.base_url or not backend.model:
+                # The harness default authenticates through its own sign-in,
+                # which nothing here can see. Probing it can only ever return
+                # UNKNOWN, and reporting that as DEAD would make this command
+                # exit non-zero on every healthy machine -- an always-red check
+                # is one people stop reading, which is how the real failures get
+                # missed. Not probeable is a different statement from broken.
+                continue
+            token = vault_lookup(backend, profiles)
+            probes[backend.id] = probe_backend(
+                backend, token=token, use_cache=not args.no_cache
+            )
+
+    if args.json:
+        rows = []
+        for backend in found:
+            row = backend.as_dict()
+            hit = probes.get(backend.id)
+            if hit is not None:
+                row["probe"] = hit.as_dict()
+            rows.append(row)
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    print(f"Backends this machine can launch ({len(found)}):")
+    for backend in found:
+        mark = "  " if backend.launchable else "! "
+        launcher = backend.launcher or "-"
+        model = backend.model or "(the account you are signed in as)"
+        line = f"{mark}{backend.id:22} {launcher:10} {model}"
+        hit = probes.get(backend.id)
+        if hit is not None:
+            flag = "ok" if hit.usable else "DEAD"
+            line += f"   [{flag}: {hit.verdict.value}"
+            line += f", {hit.latency_ms}ms]" if hit.latency_ms else "]"
+        elif args.probe and backend.launchable:
+            line += "   [not probeable: its own sign-in]"
+        print(line)
+        if backend.hint:
+            print(f"    {backend.hint}")
+        if hit is not None and hit.detail:
+            print(f"    {hit.detail}")
+
+    unlaunchable = [b for b in found if not b.launchable]
+    if unlaunchable:
+        print()
+        print(f"  ! {len(unlaunchable)} configured but not launchable from here")
+    if probes:
+        dead = [i for i, pr in probes.items() if not pr.usable]
+        if dead:
+            print()
+            print(f"  ! probed DEAD: {', '.join(sorted(dead))}")
+            # Exit 1, not 0. A roster listing a backend that cannot answer is the
+            # exact state this command exists to surface, and a caller scripting
+            # a preflight needs a non-zero to act on.
+            return 1
+    return 0
+
+
+def cmd_preflight(args) -> int:
+    """Can a session launch on ONE named backend and answer a turn?
+
+    Built for a LAUNCHER to call, which shapes everything about it: one line of
+    output, and an exit code a shell can branch on.
+
+        0  usable -- go
+        1  definitively not usable, and the reason is on stdout
+        2  could not judge
+
+    Exit 2 is separate from exit 1 on purpose. A launcher must not fall back to
+    another backend because a probe timed out; that would move a user off the
+    model they asked for on the strength of a flaky network. Only a definite
+    verdict earns a fallback.
+
+    $AWSETTINGS_PROBE_TOKEN short-circuits the key lookup, so a switcher that has
+    already resolved the credential does not pay for a second vault round trip.
+    """
+    profiles = load_profiles_for_probe()
+    try:
+        found = discover_backends()
+    except BackendsCouldNotJudgeError as exc:
+        print(f"could not judge: {exc}")
+        return 2
+
+    wanted = args.profile
+    match = [b for b in found if b.id == wanted] or [b for b in found if b.launcher == wanted]
+    if not match:
+        print(f"could not judge: no backend named '{wanted}' on this machine")
+        return 2
+    backend = match[0]
+
+    if not backend.base_url or not backend.model:
+        # The harness default. Nothing here can see its sign-in, and a launcher
+        # asking about it should proceed rather than be blocked by a probe that
+        # is structurally unable to answer.
+        print(f"{backend.id}: the harness default; its own sign-in decides, not this check")
+        return 0
+
+    token = os.environ.get("AWSETTINGS_PROBE_TOKEN") or vault_lookup(backend, profiles)
+    hit = probe_backend(backend, token=token, use_cache=not args.no_cache)
+    suffix = f" ({hit.detail})" if hit.detail else ""
+    cached = " [cached]" if hit.cached else ""
+    if hit.usable:
+        print(f"{backend.id}: {hit.verdict.value}{suffix}{cached}")
+        return 0
+    if hit.verdict is BackendProbeVerdict.UNKNOWN:
+        print(f"{backend.id}: could not judge -- {hit.verdict.value}{suffix}{cached}")
+        return 2
+    print(f"{backend.id}: {hit.verdict.value}{suffix}{cached}")
+    return 1
 
 
 def cmd_hook(args) -> int:
@@ -259,10 +408,22 @@ def self_test() -> int:
         for p in problems:
             print("  x " + p)
         return 1
+    # The backend resolver has its own arms; run them here so one --self-test is
+    # the whole package's verdict. A second entry point nobody remembers to call
+    # is a test that does not run.
+    if backends_self_test() != 0:
+        return 1
+    if backends_probe_self_test() != 0:
+        return 1
+
     print("self-test ok: credentials never leave or arrive, arrays union instead of "
           "replacing, a deny is never dropped by default, hooks install once and do not "
           "clobber, a malformed file refuses rather than reading empty, writes are "
-          "atomic, and the target is the personal settings file")
+          "atomic, the target is the personal settings file, the backend roster "
+          "reads a quoted shim, hides a documentation key, and marks a profile with no "
+          "launcher unlaunchable instead of dropping it, and a probe tells an empty "
+          "balance apart from a bad key apart from an unknown model instead of "
+          "reporting one boolean")
     return 0
 
 
@@ -290,11 +451,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--debounce", action="store_true")
     p = sub.add_parser("hook")
     p.add_argument("action", choices=["install", "uninstall"])
+    p = sub.add_parser("preflight")
+    p.add_argument("profile", help="profile id or launcher name (e.g. deepseek, cds)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="ignore the 15-minute probe cache and ask the endpoint again")
+    p = sub.add_parser("backends")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable roster, for a picker in another surface")
+    p.add_argument("--probe", action="store_true",
+                   help="also send one minimal request per backend and classify the "
+                        "result (key present? credit left? model known?). Exits 1 if "
+                        "any launchable backend cannot answer.")
+    p.add_argument("--no-cache", action="store_true",
+                   help="ignore the 15-minute probe cache and ask the endpoint again")
 
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
-    for name in ("dry_run", "prune_denies", "debounce"):
+    for name in ("dry_run", "prune_denies", "debounce", "json", "probe", "no_cache"):
         if not hasattr(args, name):
             setattr(args, name, False)
 
@@ -307,6 +481,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_push(args)
         if args.cmd == "hook":
             return cmd_hook(args)
+        if args.cmd == "backends":
+            return cmd_backends(args)
+        if args.cmd == "preflight":
+            return cmd_preflight(args)
     except UntrustedProfileError as exc:
         # A profile that cannot be proven yours is REFUSED, and the settings
         # are not applied. This is the one failure that must never be quiet.
