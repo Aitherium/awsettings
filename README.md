@@ -105,6 +105,64 @@ export AWSETTINGS_TOKEN=...     # environment only — never a command-line flag
 A transport failure is never read as "no settings": both backends raise, and the
 CLI exits **2** rather than merging nothing and reporting success.
 
+**A 200 is not "stored".** Some endpoints wrap everything in a `preferences`
+object and read only that key; send them a bare body and they merge nothing and
+answer OK. The shape is detected, not assumed, and after a push the server's echo
+is compared with what was sent. A key the server dropped is named by path and the
+push exits **1**:
+
+```
+$ awsettings --domain desk push
+REFUSED: PUT https://example.com/api/settings/preferences stored the profile but DROPPED 1 key(s).
+  dropped: authors.token-service
+```
+
+`AWSETTINGS_TOKEN_FILE=~/.config/my-tool/bearer` reads the token from a file some
+other tool already rotates. A path is not a credential, so it is safe to export.
+
+## More than one settings file
+
+The three rules are not about one file; they are about any config edited from more
+than one machine. A **domain** says how they apply to a particular file.
+
+```
+$ awsettings domains
+claude   a coding agent's personal settings.local.json
+         /home/you/project/.claude/settings.local.json (present)
+         stays home: apiKeyHelper, env, sandbox.credentials, ...
+desk     a desktop avatar's cast.json: bodies, voices, volume, presence, models, prompts, vision
+         /home/you/.config/Desk/cast.json (present)
+         stays home: voice.endpoint
+```
+
+`claude` is the default and behaves exactly as it always has. `desk` is a desktop
+avatar's cast file, and it is managed as a plain config file from any shell, script
+or agent — the app watches the file, so a change lands live:
+
+```bash
+awsettings --domain desk set voice.volume 0.4            # the master fader
+awsettings --domain desk set 'actors."mcp:speak".volume' 1.5
+awsettings --domain desk set voice.muted true            # silent, captions stay on
+awsettings --domain desk get voice
+awsettings --domain desk push                            # ...and on the next machine:
+awsettings --domain desk pull
+```
+
+Two things differ from `claude`, each for a reason:
+
+* **Records merge field by field.** Two machines edit different *fields* of the same
+  speaker. A one-level merge would let one machine's record replace the other's
+  whole — the replace-semantics loss this tool exists to prevent.
+* **Its own `sync` section never travels.** It holds a profile path and a bearer-file path
+  on one machine. A profile that could deliver one could re-point a machine's sync target —
+  and the file its bearer is read from — at a server of its choosing. Never sent, refused on arrival.
+* **`voice.endpoint` stays home, in both directions.** It is not a secret; it is a
+  fact about one machine's network. Synced to a laptop with nothing on that port, it
+  mutes a working avatar with a config that looks correct.
+
+A merge cannot carry a delete, so un-setting a field everywhere is an explicit
+`null`: `awsettings --domain desk set 'actors."mcp:speak".volume' null`.
+
 ## Exit codes
 
 | code | meaning |

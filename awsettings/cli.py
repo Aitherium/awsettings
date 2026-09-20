@@ -33,8 +33,9 @@ from .backends import probe as probe_backend
 from .backends import probe_self_test as backends_probe_self_test
 from .backends import self_test as backends_self_test
 from .core import SECRET_KEYS, diff_summary, merge, redact
+from .domains import all_domains, get_domain
 from .hooks import install_to, installed, uninstall_from
-from .profile import resolve
+from .profile import ProfileRejectedError, missing_paths, resolve
 from .store import CouldNotRunError, local_settings_path, read_json, write_json
 from .trust import UntrustedProfileError
 
@@ -48,9 +49,27 @@ def _root(args) -> Path | None:
     return Path(args.root or os.getcwd())
 
 
+def _dom(args):
+    try:
+        return get_domain(getattr(args, "domain", None))
+    except KeyError as exc:
+        # An unknown domain is "could not judge", never a fall-back to the default:
+        # syncing the WRONG file and printing ok is the worst thing this can do.
+        raise CouldNotRunError(str(exc.args[0])) from exc
+
+
+def _stamp(dom) -> Path:
+    """One debounce stamp per domain, so a push of one file cannot swallow the
+    push of another that happened inside the same five seconds."""
+    if dom.name == "claude":
+        return DEBOUNCE_STAMP
+    return DEBOUNCE_STAMP.with_name(f"last-push-{dom.name}")
+
+
 def cmd_status(args) -> int:
-    target = local_settings_path(_root(args))
-    backend = resolve(args.url, args.profile)
+    dom = _dom(args)
+    target = dom.locate(_root(args))
+    backend = resolve(args.url, args.profile, namespace=dom.namespace)
     local = read_json(target)
     try:
         remote = backend.get()
@@ -59,11 +78,13 @@ def cmd_status(args) -> int:
         print(f"remote: {backend.describe()}")
         print(f"DEAD: {exc}")
         return 2
-    merged = merge(local, remote)
-    lines = diff_summary(local, merged)
+    merged = merge(local, remote, domain=dom)
+    lines = diff_summary(local, merged, domain=dom)
+    print(f"domain: {dom.name} -- {dom.summary}")
     print(f"local:  {target} ({'present' if target.is_file() else 'absent'})")
     print(f"remote: {backend.describe()}")
-    print(f"hooks:  {', '.join(installed(local)) or 'not installed'}")
+    if dom.hookable:
+        print(f"hooks:  {', '.join(installed(local)) or 'not installed'}")
     if not lines:
         print("in step: a pull would change nothing")
         return 0
@@ -74,8 +95,9 @@ def cmd_status(args) -> int:
 
 
 def cmd_pull(args) -> int:
-    target = local_settings_path(_root(args))
-    backend = resolve(args.url, args.profile)
+    dom = _dom(args)
+    target = dom.locate(_root(args))
+    backend = resolve(args.url, args.profile, namespace=dom.namespace)
     try:
         local = read_json(target)
         remote = backend.get()
@@ -84,8 +106,8 @@ def cmd_pull(args) -> int:
         if not args.quiet:
             print(f"DEAD: {exc}")
         return 2
-    merged = merge(local, remote, prune_denies=args.prune_denies)
-    lines = diff_summary(local, merged)
+    merged = merge(local, remote, prune_denies=args.prune_denies, domain=dom)
+    lines = diff_summary(local, merged, domain=dom)
     if not lines:
         if not args.quiet:
             print("already in step")
@@ -104,22 +126,24 @@ def cmd_pull(args) -> int:
 
 
 def cmd_push(args) -> int:
+    dom = _dom(args)
+    stamp = _stamp(dom)
     if args.debounce:
         try:
-            last = DEBOUNCE_STAMP.stat().st_mtime
-            if time.time() - last < DEBOUNCE_SECONDS:
-                return 0
+            recent = time.time() - stamp.stat().st_mtime < DEBOUNCE_SECONDS
         except OSError:
-            pass
-    target = local_settings_path(_root(args))
-    backend = resolve(args.url, args.profile)
+            recent = False      # no stamp yet: nothing to debounce against
+        if recent:
+            return 0
+    target = dom.locate(_root(args))
+    backend = resolve(args.url, args.profile, namespace=dom.namespace)
     try:
         local = read_json(target)
     except CouldNotRunError as exc:
         if not args.quiet:
             print(f"DEAD: {exc}")
         return 2
-    snapshot = redact(local)
+    snapshot = redact(local, domain=dom)
     if args.dry_run:
         print(json.dumps(snapshot, indent=2))
         return 0
@@ -129,8 +153,15 @@ def cmd_push(args) -> int:
         if not args.quiet:
             print(f"DEAD: {exc}")
         return 2
-    DEBOUNCE_STAMP.parent.mkdir(parents=True, exist_ok=True)
-    DEBOUNCE_STAMP.write_text(str(time.time()), encoding="utf-8")
+    except ProfileRejectedError as exc:
+        # Printed even under --quiet: the server said yes and kept less than it was
+        # given, which is the one push outcome that must never be silent.
+        print(f"REFUSED: {exc}")
+        for path in exc.dropped:
+            print(f"  dropped: {path}")
+        return 1
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(time.time()), encoding="utf-8")
     if not args.quiet:
         kept = sorted(snapshot)
         dropped = sorted(k for k in local if k not in snapshot)
@@ -281,7 +312,116 @@ def cmd_preflight(args) -> int:
     return 1
 
 
+def cmd_domains(args) -> int:
+    """Which files this can sync, and where each one lives on THIS machine."""
+    rows = []
+    for name, dom in sorted(all_domains().items()):
+        path = dom.locate(_root(args))
+        rows.append({
+            "domain": name, "namespace": dom.namespace, "summary": dom.summary,
+            "path": str(path), "present": path.is_file(),
+            "stays_home": sorted(dom.secret_keys) + sorted(
+                f"{k}.{s}" for k, subs in dom.home_subkeys.items() for s in subs),
+        })
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        mark = "present" if row["present"] else "absent"
+        print(f"{row['domain']:<8} {row['summary']}")
+        print(f"         {row['path']} ({mark})")
+        print(f"         stays home: {', '.join(row['stays_home']) or 'nothing'}")
+    return 0
+
+
+def _split_path(dotted: str) -> list[str]:
+    """`actors."claude_code:7f3a".volume` -> three segments. A segment that itself
+    contains a dot or a colon is written in double quotes, the same way the desktop
+    app's own provenance strings print it."""
+    segs: list[str] = []
+    buf = ""
+    quoted = False
+    for ch in dotted:
+        if ch == '"':
+            quoted = not quoted
+        elif ch == "." and not quoted:
+            segs.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    segs.append(buf)
+    if quoted or any(not s for s in segs):
+        raise CouldNotRunError(f"cannot parse key path {dotted!r}")
+    return segs
+
+
+def cmd_get(args) -> int:
+    dom = _dom(args)
+    target = dom.locate(_root(args))
+    cur = read_json(target)
+    if args.path:
+        for seg in _split_path(args.path):
+            if not isinstance(cur, dict) or seg not in cur:
+                print(f"unset: {args.path} in {target}")
+                return 1
+            cur = cur[seg]
+    print(json.dumps(cur, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_set(args) -> int:
+    """Write ONE value into the domain's local file, atomically.
+
+    The value is JSON (`0.4`, `true`, `"nova"`, `null`). `null` is meaningful, not
+    a delete: it is an explicit "unset" that survives a merge, which is the only way
+    un-setting a field can reach the other machines. The file's owner validates on
+    load -- this does not second-guess a schema it does not own.
+    """
+    dom = _dom(args)
+    target = dom.locate(_root(args))
+    segs = _split_path(args.path)
+    if segs[0] in dom.secret_keys:
+        print(f"REFUSED: {segs[0]!r} is a credential key; this tool does not write one")
+        return 1
+    try:
+        value = json.loads(args.value)
+    except json.JSONDecodeError:
+        # A bare word is a string: `awsettings set voice.defaultVoice nova` should
+        # not need shell-escaped quotes to mean the obvious thing.
+        value = args.value
+    data = read_json(target)
+    before = json.loads(json.dumps(data))
+    cur = data
+    for seg in segs[:-1]:
+        nxt = cur.get(seg)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[seg] = nxt
+        cur = nxt
+    cur[segs[-1]] = value
+    if dom.name == "desk" and "version" not in data:
+        data["version"] = 1
+    if before == data:
+        if not args.quiet:
+            print("already set")
+        return 0
+    write_json(target, data)
+    if not args.quiet:
+        print(f"set {args.path} = {json.dumps(value)} in {target}")
+        if segs[0] not in dom.synced_keys:
+            print("  note: this key stays on this machine; a push will not send it")
+        elif segs[0] in dom.home_subkeys and len(segs) > 1 \
+                and segs[1] in dom.home_subkeys[segs[0]]:
+            print("  note: this key stays on this machine; a push will not send it")
+    return 0
+
+
 def cmd_hook(args) -> int:
+    dom = _dom(args)
+    if not dom.hookable:
+        print(f"REFUSED: the {dom.name!r} domain has no session hooks to install into; "
+              f"run `awsettings --domain {dom.name} pull` from whatever starts that app")
+        return 1
     target = local_settings_path(_root(args))
     if args.action == "install":
         path, evs = install_to(target)
@@ -378,12 +518,14 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as td:
         bad = Path(td) / "settings.local.json"
         bad.write_text("{ not json", encoding="utf-8")
+        refused = False
         try:
             read_json(bad)
+        except CouldNotRunError:
+            refused = True
+        if not refused:
             problems.append("a malformed settings file read as EMPTY — that is how a "
                             "sync overwrites a half-finished edit")
-        except CouldNotRunError:
-            pass
         # ...and a write is atomic: no .tmp left behind.
         good = Path(td) / "out.json"
         write_json(good, {"a": 1})
@@ -402,6 +544,60 @@ def self_test() -> int:
     # --- the secret list is not empty ------------------------------------
     if not SECRET_KEYS:
         problems.append("the credential denylist is empty, so redact() is a no-op")
+
+    # --- a NESTED credential may not arrive either ------------------------
+    # The top-level arm above passed for months while this one was open: the
+    # sub-key denylist was enforced on the way out and never on the way in.
+    planted = merge({"sandbox": {"enabled": True}},
+                    {"sandbox": {"credentials": {"envVars": [{"name": "PLANTED"}]}}})
+    if "credentials" in planted.get("sandbox", {}):
+        problems.append("merge() accepted sandbox.credentials from the profile — anyone "
+                        "who can write the profile can plant a credential block")
+    if planted.get("sandbox", {}).get("enabled") is not True:
+        problems.append("refusing sandbox.credentials cost the rest of `sandbox`")
+
+    # --- the desk domain: leaf merge, topology stays home ------------------
+    desk = get_domain("desk")
+    here = {"version": 1, "voice": {"volume": 0.4,
+                                    "endpoint": {"host": "127.0.0.1", "port": 8084}},
+            "actors": {"mcp:speak": {"voice": "onyx"}}, "migratedLegacyAt": "x"}
+    sent = redact(here, domain=desk)
+    if "endpoint" in sent.get("voice", {}):
+        problems.append("desk: voice.endpoint left the machine — one box's voice port is "
+                        "not another's, and a synced one mutes a working avatar")
+    if "migratedLegacyAt" in sent:
+        problems.append("desk: migratedLegacyAt was synced — a second machine would "
+                        "believe its own migration already ran")
+    there = {"version": 1, "voice": {"muted": True, "endpoint": {"host": "evil", "port": 1}},
+             "actors": {"mcp:speak": {"volume": 0.5}}, "injected": {"x": 1}}
+    both = merge(here, there, domain=desk)
+    if both["actors"]["mcp:speak"] != {"voice": "onyx", "volume": 0.5}:
+        problems.append("desk: merge replaced a whole actor record instead of merging its "
+                        "fields — machine B loses the voice machine A never set")
+    if both["voice"].get("endpoint", {}).get("host") != "127.0.0.1":
+        problems.append("desk: an ARRIVING voice.endpoint overwrote the local one")
+    if both["voice"].get("volume") != 0.4 or both["voice"].get("muted") is not True:
+        problems.append("desk: voice fields did not merge leaf by leaf")
+    if "injected" in both:
+        problems.append("desk: an unknown top-level key arrived and was written")
+    if not any("actors.mcp:speak.volume" in ln for ln in diff_summary(here, both, domain=desk)):
+        problems.append("desk: the diff does not name the FIELD a pull changed")
+
+    # --- a server that drops a key is caught, by path ---------------------
+    if missing_paths({"authors": {"token-service": {"volume": 1}}, "voice": {"volume": 1}},
+                     {"authors": {}, "voice": {"volume": 1}}) != ["authors.token-service"]:
+        problems.append("missing_paths() did not name the key a server dropped")
+    if missing_paths({"a": {"b": 1}}, {"a": {"b": 2}}):
+        problems.append("missing_paths() flagged a changed VALUE; it judges keys only")
+
+    # --- an unknown domain is refused, never defaulted --------------------
+    unknown_refused = False
+    try:
+        get_domain("no-such-domain")
+    except KeyError:
+        unknown_refused = True
+    if not unknown_refused:
+        problems.append("an unknown domain fell back to a default instead of refusing")
 
     if problems:
         print("SELF-TEST FAILED:")
@@ -452,9 +648,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--url", help="profile endpoint (default: $AWSETTINGS_URL)")
     ap.add_argument("--profile", help="profile FILE (default: $AWSETTINGS_PROFILE)")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--domain", default=os.getenv("AWSETTINGS_DOMAIN") or "claude",
+                    help="which settings file to act on (see `awsettings domains`; "
+                         "default: claude)")
     sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("status")
+    p = sub.add_parser("domains")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("get")
+    p.add_argument("path", nargs="?", default="",
+                   help='dotted key path, e.g. voice.volume or actors."mcp:speak".volume')
+    p = sub.add_parser("set")
+    p.add_argument("path", help="dotted key path")
+    p.add_argument("value", help="a JSON value: 0.4, true, \"nova\", null")
     p = sub.add_parser("pull")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--prune-denies", action="store_true",
@@ -493,6 +700,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_pull(args)
         if args.cmd == "push":
             return cmd_push(args)
+        if args.cmd == "domains":
+            return cmd_domains(args)
+        if args.cmd == "get":
+            return cmd_get(args)
+        if args.cmd == "set":
+            return cmd_set(args)
         if args.cmd == "hook":
             return cmd_hook(args)
         if args.cmd == "backends":
