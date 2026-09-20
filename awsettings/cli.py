@@ -399,7 +399,7 @@ def cmd_set(args) -> int:
             cur[seg] = nxt
         cur = nxt
     cur[segs[-1]] = value
-    if dom.name == "desk" and "version" not in data:
+    if dom.name in ("desk", "mods") and "version" not in data:
         data["version"] = 1
     if before == data:
         if not args.quiet:

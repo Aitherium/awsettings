@@ -163,6 +163,25 @@ Two things differ from `claude`, each for a reason:
 A merge cannot carry a delete, so un-setting a field everywhere is an explicit
 `null`: `awsettings --domain desk set 'actors."mcp:speak".volume' null`.
 
+## The `mods` domain: which model your coding agent's subagent runs on
+
+`~/.aither/mods.json` holds the defaults a coding agent's `aw` subagent uses when the
+prompt does not name a route: which harness, which backend, which model. The mod reads
+it on every spawn, so a change takes effect on the next one with no restart.
+
+```bash
+awsettings --domain mods set aw.harness opencode     # the default harness
+awsettings --domain mods set aw.backend kimi-k3      # a backend profile, where one binds
+awsettings --domain mods get aw
+awsettings --domain mods push                        # ...and on the next machine:
+awsettings --domain mods pull
+```
+
+`aw.daemon` stays home in both directions, for the same reason a voice endpoint does:
+where a daemon listens is a fact about one machine. An unknown top-level key is refused
+on arrival — this file steers what a coding agent runs, so nothing a pull brings in may
+be a key the mod would not have written itself.
+
 ## Exit codes
 
 | code | meaning |

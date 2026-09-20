@@ -7,13 +7,17 @@ machine. A **domain** is the small table that tells the engine how to apply them
 a particular file: where it lives, which keys travel, which stay home, which arrays
 union.
 
-Two domains ship:
+Three domains ship:
 
 * ``claude`` -- the coding agent's ``settings.local.json``. The original behaviour,
   bit for bit; it is the default so nothing that already calls this package moves.
 * ``desk``   -- a desktop avatar's ``cast.json``: who gets a body, which voice, how
   fast, **how loud**, where they stand. It is a plain JSON file the desktop app
   watches, so a pull lands live with no restart.
+
+* ``mods``   -- ``~/.aither/mods.json``: which harness, backend and model a coding
+  agent's `aw` subagent runs on when the prompt does not say. The Claude Code mod
+  reads it on every spawn, so a pull changes the next spawn with no restart.
 
 WHY A TABLE AND NOT A SUBCLASS. Every field here is data the self-test can assert
 against. A domain that is code can quietly decide a credential is fine to send; a
@@ -131,6 +135,13 @@ DESK = Domain(
         # The desk's own behaviour: which backend its command agent runs on, what
         # it is told, and whether it looks at dropped images.
         "models", "prompts", "vision",
+        # `content` is the desk's CEILING (content.maxRating / hideUnrated), not
+        # the adult gate. The gate is the platform's two halves -- an explicit
+        # opt-in AND age verification -- and nothing that arrives in a profile
+        # can open it. A ceiling can only ever hide MORE, so carrying it to the
+        # next machine is safe: an r18 ceiling landing on a machine whose gate
+        # is shut still shows that machine nothing.
+        "content",
         # `migratedLegacyAt` is deliberately absent: it records that THIS machine
         # folded in its own legacy files. Syncing it would tell a second machine
         # its migration already ran, and it would then never run.
@@ -152,8 +163,40 @@ DESK = Domain(
 )
 
 
+def mods_path(root: Path | None = None) -> Path:
+    """The mods file. ``root`` is ignored: it is per USER, like the mod that reads it.
+
+    The mod reads this fixed path and nothing else (a hooks module cannot be handed
+    an override), so ``AWSETTINGS_MODS_FILE`` is for tests: a file it names is one
+    the mod never sees.
+    """
+    override = (os.environ.get("AWSETTINGS_MODS_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "mods.json"
+
+
+MODS = Domain(
+    name="mods",
+    namespace="awmods",
+    summary="a coding agent's mods.json: the default harness, backend and model "
+            "its `aw` subagent runs on",
+    synced_keys=frozenset({"version", "aw"}),
+    secret_keys=frozenset(),
+    # Where the harness daemon listens is one machine's topology, exactly like a
+    # voice endpoint: never sent, never accepted on arrival.
+    home_subkeys={"aw": frozenset({"daemon"})},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    locate=mods_path,
+    hookable=False,
+)
+
+
 def all_domains() -> dict:
-    return {"claude": _claude(), "desk": DESK}
+    return {"claude": _claude(), "desk": DESK, "mods": MODS}
 
 
 def get_domain(name: str | None) -> Domain:
