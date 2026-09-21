@@ -267,10 +267,38 @@ def resolve_token() -> str | None:
     return token or None
 
 
+#: Env vars that name the hosted settings host, in precedence order.
+#:
+#: 🚩 TWO SIBLINGS, ONE STORE, DIFFERENT ENV NAMES — so configuring one left the other
+#: silently local. `awdk/adk/sync/settings.py::_default_portal_url` reads
+#: AITHER_PORTAL_URL, then AITHER_ELYSIUM_URL, then falls back to
+#: https://api.aitherium.com, and POSTs the SAME /api/settings/preferences hub this
+#: package talks to. This one read only AWSETTINGS_URL. A user who set
+#: AITHER_PORTAL_URL therefore got adk synced to the platform and awsettings writing a
+#: file on their laptop, with nothing reporting the divergence — the two tools simply
+#: disagreed about where a preference lives (measured 2026-09-20).
+#:
+#: The LOCAL FILE stays the default on purpose, and that is not the same bug: a
+#: settings tool for a laptop must work with no network and must not turn every
+#: `awsettings get` into a request. What was wrong was the NAME, not the fallback.
+HOST_ENV_VARS = ("AWSETTINGS_URL", "AITHER_PORTAL_URL", "AITHER_ELYSIUM_URL")
+
+
+def resolve_url(url: str | None = None) -> str | None:
+    """The hosted settings host, or None to use the local file."""
+    if url:
+        return url
+    for var in HOST_ENV_VARS:
+        value = (os.getenv(var) or "").strip()
+        if value:
+            return value
+    return None
+
+
 def resolve(url: str | None = None, path: str | None = None,
             namespace: str = NAMESPACE) -> Backend:
     """Pick a backend. Explicit argument, then environment, then the local file."""
-    url = url or os.getenv("AWSETTINGS_URL")
+    url = resolve_url(url)
     if url:
         envelope = (os.getenv("AWSETTINGS_ENVELOPE") or "auto").strip().lower()
         return HttpBackend(url, resolve_token(), namespace=namespace, envelope=envelope)
