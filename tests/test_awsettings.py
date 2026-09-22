@@ -363,3 +363,30 @@ def test_payload_bytes_are_canonical():
 def test_is_sealed_is_not_fooled_by_an_empty_seal():
     assert is_sealed({SEAL_KEY: ""}) is False
     assert is_sealed({SEAL_KEY: "sig"}) is True
+
+
+def test_hook_commands_parse(tmp_path):
+    """The installed hook commands must parse under the CLI's own argparse.
+
+    `--quiet` is a global flag; placed after the verb it is "unrecognized arguments"
+    (exit 2) and the hook's `|| true` hides that forever. Measured 2026-09-21: the
+    SessionStart pull and PostToolUse push had never run once since install.
+    """
+    import shlex
+
+    import pytest
+    from awsettings import cli, hooks
+
+    root = tmp_path / "proj"
+    (root / ".claude").mkdir(parents=True)
+    (root / ".claude" / "settings.local.json").write_text(
+        '{"permissions": {"allow": []}}', encoding="utf-8")
+    scope = ["--root", str(root), "--profile", str(tmp_path / "profile.json")]
+    for cmd in (hooks.PULL_COMMAND, hooks.PUSH_COMMAND):
+        argv = shlex.split(cmd.split("||")[0].strip())[1:]
+        assert argv[0] == "--quiet", cmd
+        assert cli.main(scope + argv) == 0, cmd
+    # The regression arm: the pre-fix shape must still be refused by argparse.
+    with pytest.raises(SystemExit) as exc:
+        cli.main(scope + ["pull", "--quiet"])
+    assert exc.value.code == 2

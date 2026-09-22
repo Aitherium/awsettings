@@ -31,8 +31,13 @@ from .store import read_json, write_json
 #: makes removal exact rather than best-effort.
 MARKER = "awsettings"
 
-PULL_COMMAND = "awsettings pull --quiet || true"
-PUSH_COMMAND = "awsettings push --quiet --debounce || true"
+#: `--quiet` is a GLOBAL option and argparse only accepts it BEFORE the verb.
+#: Measured 2026-09-21: the previous `awsettings pull --quiet` form exited 2
+#: ("unrecognized arguments: --quiet") on every SessionStart and every PostToolUse
+#: since install, and `|| true` hid it -- the sync never ran once. Pinned by
+#: test_hook_commands_parse.
+PULL_COMMAND = "awsettings --quiet pull || true"
+PUSH_COMMAND = "awsettings --quiet push --debounce || true"
 
 #: `|| true` on both is deliberate. A settings sync must never be able to fail a
 #: session open or a tool call: offline is the normal state of a laptop, and the
