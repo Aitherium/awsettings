@@ -94,6 +94,11 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _env_flag(name: str) -> bool:
+    import os
+    return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def cmd_pull(args) -> int:
     dom = _dom(args)
     target = dom.locate(_root(args))
@@ -144,6 +149,15 @@ def cmd_push(args) -> int:
             print(f"DEAD: {exc}")
         return 2
     snapshot = redact(local, domain=dom)
+    if getattr(args, "sign", False) or _env_flag("AWSETTINGS_SIGN"):
+        from .trust import UntrustedProfileError, seal
+        try:
+            snapshot = seal(snapshot)
+        except UntrustedProfileError as exc:
+            # Never fall back to an unsigned push: every machine that requires a
+            # seal would refuse it, and the rest would apply it unverified.
+            print(f"REFUSED: {exc}")
+            return 1
     if args.dry_run:
         print(json.dumps(snapshot, indent=2))
         return 0
@@ -670,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("push")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debounce", action="store_true")
+    p.add_argument("--sign", action="store_true",
+                   help="seal the profile with your awseal key (also AWSETTINGS_SIGN=1)")
     p = sub.add_parser("hook")
     p.add_argument("action", choices=["install", "uninstall"])
     p = sub.add_parser("preflight")

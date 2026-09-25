@@ -120,6 +120,27 @@ REFUSED: PUT https://example.com/api/settings/preferences stored the profile but
 `AWSETTINGS_TOKEN_FILE=~/.config/my-tool/bearer` reads the token from a file some
 other tool already rotates. A path is not a credential, so it is safe to export.
 
+### Signed, across machines
+
+A profile carries permissions, so a machine should apply only what you signed.
+Sign on the machine you edit on, and verify everywhere else:
+
+```bash
+python -c "import awseal; awseal.keygen()"             # once, on the signing machine
+export AWSETTINGS_SIGN=1                               # every push is sealed (or: push --sign)
+
+# on every machine that pulls
+export AWSETTINGS_PUBLIC_KEY=<python -c "import awseal; print(awseal.public_key_hex())">
+export AWSETTINGS_REQUIRE_SEAL=1                       # an unsigned profile is refused
+```
+
+The hooks already run `pull` at session start and `push` after edits, so once these
+are exported sync needs nothing else. A sealed profile travels as one opaque string
+(`{"_sealed": "...", "_seal": "..."}`), because an endpoint that deep-merges its
+PUTs keeps old keys and would change the signed bytes. Keys a server adds beside
+that string are dropped on pull and never applied. A push with `--sign` and no
+usable key exits **1** and sends nothing.
+
 ## More than one settings file
 
 The three rules are not about one file; they are about any config edited from more

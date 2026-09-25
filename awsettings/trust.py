@@ -49,6 +49,10 @@ from typing import Any
 #: Where the seal lives inside the profile object. A sibling of the settings
 #: payload rather than inside it, so the signed bytes are exactly the payload.
 SEAL_KEY = "_seal"
+#: A sealed profile travels as ONE opaque string under this key. Servers that
+#: deep-merge (aitherium.com's preferences route keeps keys absent from a PUT)
+#: would otherwise change the signed bytes and fail every pull.
+SEALED_KEY = "_sealed"
 
 
 class UntrustedProfileError(Exception):
@@ -194,4 +198,32 @@ def seal(payload: dict[str, Any]) -> dict[str, Any]:
             f"{mod.KEY_PATH_ENV} at an existing one.") from exc
     out = dict(payload)
     out[SEAL_KEY] = priv.sign(payload_bytes(payload)).hex()
+    return out
+
+
+def to_wire(profile: dict[str, Any]) -> dict[str, Any]:
+    """A sealed profile as {_sealed: <canonical json>, _seal: hex}; unsealed unchanged."""
+    if not is_sealed(profile):
+        return profile
+    payload = {k: v for k, v in profile.items() if k != SEAL_KEY}
+    return {SEALED_KEY: payload_bytes(payload).decode("utf-8"), SEAL_KEY: profile[SEAL_KEY]}
+
+
+def from_wire(stored: dict[str, Any]) -> dict[str, Any]:
+    """Inverse of to_wire. Any key the server merged in beside the envelope is
+    DROPPED, never applied: only the signed bytes are trusted."""
+    blob = stored.get(SEALED_KEY) if isinstance(stored, dict) else None
+    if blob is None:
+        return stored
+    if not isinstance(blob, str):
+        raise UntrustedProfileError(f"{SEALED_KEY} is not a string")
+    try:
+        payload = json.loads(blob)
+    except ValueError as exc:
+        raise UntrustedProfileError(f"{SEALED_KEY} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise UntrustedProfileError(f"{SEALED_KEY} is not an object")
+    out = dict(payload)
+    if SEAL_KEY in stored:
+        out[SEAL_KEY] = stored[SEAL_KEY]
     return out

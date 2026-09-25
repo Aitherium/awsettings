@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import CouldNotRunError
-from .trust import verify
+from .trust import from_wire, to_wire, verify
 
 #: Namespace inside the remote object, so this never stomps another app's prefs.
 #: This is the ORIGINAL domain's namespace; every other domain carries its own.
@@ -99,7 +99,7 @@ class FileBackend(Backend):
         # Every read goes through the trust port. When the profile carries no seal
         # this returns it unchanged; when it carries one, a bad or uncheckable seal
         # RAISES rather than degrading to "apply it anyway".
-        return verify(ns, require_seal=require_seal())
+        return verify(from_wire(ns), require_seal=require_seal())
 
     def put(self, snapshot: dict[str, Any]) -> None:
         try:
@@ -197,13 +197,14 @@ class HttpBackend(Backend):
             return {}
         # Same trust port as the file backend. A profile fetched over the network
         # is the case the seal exists for, so this must not be the lenient path.
-        return verify(ns, require_seal=require_seal())
+        return verify(from_wire(ns), require_seal=require_seal())
 
     def put(self, snapshot: dict[str, Any]) -> None:
         if self._shape is None:
             # One extra GET, paid once per process, to learn what the server
             # speaks. Guessing is what produced a push that stored nothing.
             self._fetch()
+        snapshot = to_wire(snapshot)
         if self._shape == "preferences":
             body: dict[str, Any] = {"preferences": {self.namespace: snapshot}}
         else:
