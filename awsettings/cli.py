@@ -637,6 +637,17 @@ def self_test() -> int:
     return 0
 
 
+def _utf8_stdio() -> None:
+    """Never die printing. `status` renders arrows (U+2192); a Windows console on
+    cp1252 raised UnicodeEncodeError mid-report and hid every line after it
+    (measured 2026-09-25 on `awsettings --user status`). Replace, don't crash."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
@@ -652,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         _sv = locals().get("argv")
         if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
             return 0
+    _utf8_stdio()
     ap = argparse.ArgumentParser(prog="awsettings",
                                  description=__doc__.splitlines()[0])
     ap.add_argument("--version", action="version", version=f"awsettings {__version__}")
