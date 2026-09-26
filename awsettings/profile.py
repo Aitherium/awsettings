@@ -299,9 +299,12 @@ def resolve_token() -> str | None:
     return token or None
 
 
-#: Env vars the SIBLING adk reads for the same portal bearer, in its order.
-PORTAL_TOKEN_ENV_VARS = ("AITHER_PORTAL_TOKEN", "AITHERIUM_API_KEY", "AITHER_API_KEY",
-                         "AITHER_SYNC_TOKEN")
+#: Env vars that carry a PORTAL bearer. adk also tries AITHERIUM_API_KEY /
+#: AITHER_API_KEY, but those are platform API keys and the preferences hub answers
+#: them 401 (measured 2026-09-25) -- counting one as a sign-in would switch a
+#: machine off its working local file onto a hub that refuses it. So they are
+#: deliberately NOT here; a key-only machine keeps the file until `adk auth login`.
+PORTAL_TOKEN_ENV_VARS = ("AITHER_PORTAL_TOKEN", "AITHER_SYNC_TOKEN")
 
 #: adk's placeholder for a local-root session -- not a portal credential.
 _LOCAL_ROOT_TOKEN = "aither_root_local"
@@ -330,10 +333,17 @@ def portal_token() -> str | None:
     except ImportError:
         return None
     try:
-        token = (resolve_credentials().access_token or "").strip()
+        # The SAVED login only: adk's own env-key step would hand back the same
+        # platform API key excluded above, so name an env var nobody sets.
+        creds = resolve_credentials(env_key="AWSETTINGS_NO_ENV_KEY")
     except Exception:  # noqa: BLE001 -- a broken adk login is "no token", not a crash
         return None
-    return token if token and token != _LOCAL_ROOT_TOKEN else None
+    token = (getattr(creds, "access_token", "") or "").strip()
+    if (not token or token == _LOCAL_ROOT_TOKEN
+            or getattr(creds, "token_type", "") == "acta"      # an API key, not a login
+            or getattr(creds, "endpoint", "") == "local"):     # adk's local-root profile
+        return None
+    return token
 
 
 #: Env vars that name the hosted settings host, in precedence order.

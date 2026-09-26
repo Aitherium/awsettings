@@ -300,9 +300,10 @@ def _fake_adk(monkeypatch, token):
     import sys
     import types
 
-    creds = types.SimpleNamespace(access_token=token)
+    creds = types.SimpleNamespace(access_token=token, token_type="bearer",
+                                  endpoint="https://api.aitherium.com")
     auth = types.ModuleType("adk.auth")
-    auth.resolve_credentials = lambda: creds
+    auth.resolve_credentials = lambda **_kw: creds
     adk = types.ModuleType("adk")
     adk.auth = auth
     monkeypatch.setitem(sys.modules, "adk", adk)
@@ -358,3 +359,15 @@ def test_an_explicit_host_env_still_wins(monkeypatch, tmp_path):
     _fake_adk(monkeypatch, "portal-bearer")
     monkeypatch.setenv("AWSETTINGS_URL", "https://example.invalid/prefs")
     assert resolve_url() == "https://example.invalid/prefs"
+
+
+def test_a_platform_api_key_is_not_a_portal_sign_in(monkeypatch, tmp_path):
+    import sys
+
+    from awsettings.profile import resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    monkeypatch.setitem(sys.modules, "adk", None)
+    monkeypatch.setitem(sys.modules, "adk.auth", None)
+    monkeypatch.setenv("AITHERIUM_API_KEY", "aither_sk_live_example")
+    assert resolve_url() is None          # stays on the local file
+    assert resolve_token() is None
