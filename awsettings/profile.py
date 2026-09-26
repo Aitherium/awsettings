@@ -258,7 +258,7 @@ def resolve_token() -> str | None:
         return token
     token_file = config.get("AWSETTINGS_TOKEN_FILE")
     if not token_file:
-        return None
+        return portal_token()
     path = Path(token_file).expanduser()
     try:
         token = path.read_text(encoding="utf-8").strip()
@@ -267,6 +267,43 @@ def resolve_token() -> str | None:
         # moved" into an anonymous request and a confusing 401 from somewhere else.
         raise CouldNotRunError(f"AWSETTINGS_TOKEN_FILE {path} is unreadable: {exc}") from exc
     return token or None
+
+
+#: Env vars the SIBLING adk reads for the same portal bearer, in its order.
+PORTAL_TOKEN_ENV_VARS = ("AITHER_PORTAL_TOKEN", "AITHERIUM_API_KEY", "AITHER_API_KEY",
+                         "AITHER_SYNC_TOKEN")
+
+#: adk's placeholder for a local-root session -- not a portal credential.
+_LOCAL_ROOT_TOKEN = "aither_root_local"
+
+#: The hosted settings hub, used when a portal sign-in exists and nothing names a URL.
+DEFAULT_HUB_URL = "https://api.aitherium.com/api/settings/preferences"
+
+
+def portal_token() -> str | None:
+    """The user's aitherium.com portal bearer, found the way adk finds it.
+
+    adk (`adk.sync.settings`) already syncs the SAME /api/settings/preferences hub
+    with the login from `adk auth login`. awsettings needed its own env var or an
+    enrolled token FILE, and adk keeps its login as JSON, not a bare-bearer file --
+    so a user signed in to the portal still got a laptop-file remote (measured
+    2026-09-25 on `awsettings --user status`). This reuses that login: adk's env
+    names first, then adk's saved credentials. adk is OPTIONAL -- awsettings is
+    standalone, so no adk simply means no portal token, never an error.
+    """
+    for var in PORTAL_TOKEN_ENV_VARS:
+        value = (os.getenv(var) or "").strip()
+        if value:
+            return value
+    try:
+        from adk.auth import resolve_credentials  # optional sibling
+    except ImportError:
+        return None
+    try:
+        token = (resolve_credentials().access_token or "").strip()
+    except Exception:  # noqa: BLE001 -- a broken adk login is "no token", not a crash
+        return None
+    return token if token and token != _LOCAL_ROOT_TOKEN else None
 
 
 #: Env vars that name the hosted settings host, in precedence order.
@@ -286,8 +323,15 @@ def resolve_token() -> str | None:
 HOST_ENV_VARS = ("AWSETTINGS_URL", "AITHER_PORTAL_URL", "AITHER_ELYSIUM_URL")
 
 
-def resolve_url(url: str | None = None) -> str | None:
-    """The hosted settings host, or None to use the local file."""
+def resolve_url(url: str | None = None, allow_hub: bool = True) -> str | None:
+    """The hosted settings host, or None to use the local file.
+
+    Precedence: --url, the host env vars, the enrolled config url, then -- only when
+    the user is signed in to the portal (see portal_token) -- the aitherium.com hub.
+    With no sign-in the local file stays the default: a laptop tool must work with
+    no network. AWSETTINGS_LOCAL=1, or an explicit profile FILE (allow_hub=False),
+    keeps the file even when signed in.
+    """
     if url:
         return url
     for var in HOST_ENV_VARS:
@@ -295,13 +339,24 @@ def resolve_url(url: str | None = None) -> str | None:
         if value:
             return value
     from . import config
-    return config.get("AWSETTINGS_URL") or None
+    configured = config.get("AWSETTINGS_URL")
+    if configured:
+        return configured
+    if not allow_hub or (os.getenv("AWSETTINGS_LOCAL") or "").strip().lower() in (
+            "1", "true", "yes"):
+        return None
+    if (os.getenv("AWSETTINGS_TOKEN") or config.get("AWSETTINGS_TOKEN_FILE")
+            or portal_token()):
+        return DEFAULT_HUB_URL
+    return None
 
 
 def resolve(url: str | None = None, path: str | None = None,
             namespace: str = NAMESPACE) -> Backend:
     """Pick a backend. Explicit argument, then environment, then the local file."""
-    url = resolve_url(url)
+    # An explicit profile FILE (--profile / AWSETTINGS_PROFILE) means that file: the
+    # portal default must never override a path the caller named.
+    url = resolve_url(url, allow_hub=not (path or os.getenv("AWSETTINGS_PROFILE")))
     if url:
         envelope = (os.getenv("AWSETTINGS_ENVELOPE") or "auto").strip().lower()
         return HttpBackend(url, resolve_token(), namespace=namespace, envelope=envelope)

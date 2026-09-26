@@ -282,3 +282,79 @@ def test_a_token_file_is_read_and_a_missing_one_is_fatal_not_anonymous(tmp_path,
     monkeypatch.setenv("AWSETTINGS_TOKEN_FILE", str(tmp_path / "gone"))
     with pytest.raises(CouldNotRunError):
         resolve_token()
+
+
+# --- the portal sign-in (adk) ---------------------------------------------------
+
+def _clear_hub_env(monkeypatch, tmp_path):
+    for var in ("AWSETTINGS_URL", "AITHER_PORTAL_URL", "AITHER_ELYSIUM_URL",
+                "AWSETTINGS_TOKEN", "AWSETTINGS_TOKEN_FILE", "AWSETTINGS_LOCAL",
+                "AWSETTINGS_PROFILE", "AITHER_PORTAL_TOKEN", "AITHERIUM_API_KEY",
+                "AITHER_API_KEY", "AITHER_SYNC_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    # No enrolled config file either: point awsettings' home somewhere empty.
+    monkeypatch.setenv("AWSETTINGS_HOME", str(tmp_path / "awsettings"))
+
+
+def _fake_adk(monkeypatch, token):
+    import sys
+    import types
+
+    creds = types.SimpleNamespace(access_token=token)
+    auth = types.ModuleType("adk.auth")
+    auth.resolve_credentials = lambda: creds
+    adk = types.ModuleType("adk")
+    adk.auth = auth
+    monkeypatch.setitem(sys.modules, "adk", adk)
+    monkeypatch.setitem(sys.modules, "adk.auth", auth)
+
+
+def test_a_portal_sign_in_selects_the_hub_and_supplies_the_bearer(monkeypatch, tmp_path):
+    from awsettings.profile import DEFAULT_HUB_URL, resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    _fake_adk(monkeypatch, "portal-bearer")
+    assert resolve_url() == DEFAULT_HUB_URL
+    assert resolve_token() == "portal-bearer"
+
+
+def test_no_sign_in_keeps_the_local_file(monkeypatch, tmp_path):
+    import sys
+
+    from awsettings.profile import resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    monkeypatch.setitem(sys.modules, "adk", None)  # adk not installed
+    monkeypatch.setitem(sys.modules, "adk.auth", None)
+    assert resolve_url() is None
+    assert resolve_token() is None
+
+
+def test_the_local_root_placeholder_is_not_a_portal_login(monkeypatch, tmp_path):
+    from awsettings.profile import resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    _fake_adk(monkeypatch, "aither_root_local")
+    assert resolve_url() is None
+
+
+def test_awsettings_local_forces_the_file_even_when_signed_in(monkeypatch, tmp_path):
+    from awsettings.profile import resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    _fake_adk(monkeypatch, "portal-bearer")
+    monkeypatch.setenv("AWSETTINGS_LOCAL", "1")
+    assert resolve_url() is None
+
+
+def test_an_explicit_profile_file_beats_the_portal_default(monkeypatch, tmp_path):
+    from awsettings.profile import FileBackend, resolve
+    _clear_hub_env(monkeypatch, tmp_path)
+    _fake_adk(monkeypatch, "portal-bearer")
+    assert isinstance(resolve(None, str(tmp_path / "p.json")), FileBackend)
+    monkeypatch.setenv("AWSETTINGS_PROFILE", str(tmp_path / "q.json"))
+    assert isinstance(resolve(None, None), FileBackend)
+
+
+def test_an_explicit_host_env_still_wins(monkeypatch, tmp_path):
+    from awsettings.profile import resolve_url
+    _clear_hub_env(monkeypatch, tmp_path)
+    _fake_adk(monkeypatch, "portal-bearer")
+    monkeypatch.setenv("AWSETTINGS_URL", "https://example.invalid/prefs")
+    assert resolve_url() == "https://example.invalid/prefs"
