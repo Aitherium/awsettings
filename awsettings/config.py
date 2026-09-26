@@ -16,6 +16,7 @@ from typing import Any
 KEYS = {
     "url": "AWSETTINGS_URL",
     "token_file": "AWSETTINGS_TOKEN_FILE",
+    "token_command": "AWSETTINGS_TOKEN_COMMAND",
     "keys_url": "AWSETTINGS_KEYS_URL",
     "sign": "AWSETTINGS_SIGN",
     "require_seal": "AWSETTINGS_REQUIRE_SEAL",

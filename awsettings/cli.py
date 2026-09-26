@@ -135,10 +135,15 @@ def cmd_enroll(args) -> int:
     """Configure this machine for signed sync. Called by `adk enroll` after the
     device is registered; safe to re-run."""
     from . import config, devices
+    if not (args.token_file or args.token_command):
+        print("REFUSED: give --token-command or --token-file: without a bearer every "
+              "request is anonymous and the store answers 401")
+        return 1
     path = config.save({
         "url": args.url,
         "keys_url": args.keys_url,
         "token_file": args.token_file,
+        "token_command": args.token_command,
         "sign": True,
         "require_seal": True,
     })
@@ -765,7 +770,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("enroll")
     p.add_argument("--url", required=True, help="settings store endpoint")
     p.add_argument("--keys-url", required=True, help="device-key registry endpoint")
-    p.add_argument("--token-file", required=True,
+    p.add_argument("--token-command",
+                   help="credential helper that prints the bearer (e.g. the sign-in tool's)")
+    p.add_argument("--token-file",
                    help="file holding the bearer (a path, never the token itself)")
     p.add_argument("--no-hooks", action="store_true")
     p = sub.add_parser("hook")

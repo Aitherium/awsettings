@@ -244,6 +244,33 @@ class HttpBackend(Backend):
                 + ("" if self.token else " (no token)"))
 
 
+def _token_from_command(command: str) -> str | None:
+    """Run a credential helper and read the bearer from its stdout.
+
+    The same shape as git's credential helpers: the tool that owns the sign-in
+    (e.g. `python -m adk.sync.token`) prints the current token, so a refreshed
+    login is picked up and the token is never copied into a second file. Run
+    without a shell, with a timeout; a helper that fails is fatal and named,
+    never an anonymous request.
+    """
+    import shlex
+    import subprocess
+    argv = shlex.split(command, posix=os.name != "nt")
+    if os.name == "nt":
+        # Non-POSIX splitting keeps the quotes that protect a path with spaces.
+        argv = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a
+                for a in argv]
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CouldNotRunError(f"AWSETTINGS_TOKEN_COMMAND could not run: {exc}") from exc
+    if done.returncode != 0:
+        raise CouldNotRunError(
+            f"AWSETTINGS_TOKEN_COMMAND exited {done.returncode} (signed out?)")
+    return (done.stdout or "").strip() or None
+
+
 def resolve_token() -> str | None:
     """The bearer, from the environment or from a FILE named by the environment.
 
@@ -256,6 +283,9 @@ def resolve_token() -> str | None:
     token = (os.getenv("AWSETTINGS_TOKEN") or "").strip()
     if token:
         return token
+    command = config.get("AWSETTINGS_TOKEN_COMMAND")
+    if command:
+        return _token_from_command(command)
     token_file = config.get("AWSETTINGS_TOKEN_FILE")
     if not token_file:
         return portal_token()

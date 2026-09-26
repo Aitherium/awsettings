@@ -131,7 +131,7 @@ def test_enroll_writes_config_and_survives_an_offline_registry(home, monkeypatch
     monkeypatch.setattr(httpx, "get", boom)
     args = types.SimpleNamespace(
         url="https://hub.invalid/prefs", keys_url="https://hub.invalid/keys",
-        token_file=str(home / "token"), no_hooks=True, root=str(home), user=False,
+        token_file=str(home / "token"), token_command=None, no_hooks=True, root=str(home), user=False,
         domain="claude", quiet=False,
     )
     assert cli.cmd_enroll(args) == 0
@@ -140,3 +140,34 @@ def test_enroll_writes_config_and_survives_an_offline_registry(home, monkeypatch
                      "sign": True, "token_file": str(home / "token"),
                      "url": "https://hub.invalid/prefs"}
     assert "not fetched yet" in capsys.readouterr().out
+
+
+def test_token_command_is_the_credential_helper(home, monkeypatch, tmp_path):
+    import sys
+
+    from awsettings.profile import resolve_token
+    helper = tmp_path / "helper.py"
+    helper.write_text("print('  tok-123  ')", encoding="utf-8")
+    config.save({"token_command": f'"{sys.executable}" "{helper}"'})
+    assert resolve_token() == "tok-123"
+
+
+def test_a_failing_token_command_is_fatal_not_anonymous(home, tmp_path):
+    import sys
+
+    from awsettings.profile import resolve_token
+    helper = tmp_path / "signed_out.py"
+    helper.write_text("import sys; sys.exit(1)", encoding="utf-8")
+    config.save({"token_command": f'"{sys.executable}" "{helper}"'})
+    with pytest.raises(CouldNotRunError, match="exited 1"):
+        resolve_token()
+
+
+def test_enroll_without_any_bearer_source_refuses(home, capsys):
+    args = types.SimpleNamespace(
+        url="https://hub.invalid/prefs", keys_url="https://hub.invalid/keys",
+        token_file=None, token_command=None, no_hooks=True, root=str(home), user=False,
+        domain="claude", quiet=False,
+    )
+    assert cli.cmd_enroll(args) == 1
+    assert not config.config_path().exists()
