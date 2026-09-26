@@ -18,6 +18,7 @@ from awsettings.profile import HttpBackend
 from awsettings.trust import (
     SEAL_KEY,
     SEALED_KEY,
+    SIGNER_KEY,
     UntrustedProfileError,
     from_wire,
     seal,
@@ -65,7 +66,7 @@ def signer(tmp_path, monkeypatch):
 def test_wire_form_round_trips_and_leaves_unsealed_alone(signer):
     sealed = seal(PROFILE)
     wire = to_wire(sealed)
-    assert set(wire) == {SEALED_KEY, SEAL_KEY}
+    assert set(wire) == {SEALED_KEY, SEAL_KEY, SIGNER_KEY}
     assert from_wire(wire) == sealed
     assert to_wire(PROFILE) is PROFILE and from_wire(PROFILE) is PROFILE
 
@@ -116,7 +117,7 @@ def test_push_sign_seals_before_sending(signer, tmp_path, monkeypatch):
     rc = cli.cmd_push(args)
     assert rc == 0
     stored = server.stored[NS]
-    assert set(stored) == {SEALED_KEY, SEAL_KEY}
+    assert set(stored) == {SEALED_KEY, SEAL_KEY, SIGNER_KEY}
     assert server.get() == json.loads(stored[SEALED_KEY])
 
 

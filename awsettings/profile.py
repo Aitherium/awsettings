@@ -57,8 +57,8 @@ def require_seal() -> bool:
     """Refuse an UNSEALED profile. Off by default so the brick is adoptable with
     no keys at all; set it once you have signed, so that deleting the seal cannot
     silently downgrade a machine that was verifying."""
-    return (os.getenv("AWSETTINGS_REQUIRE_SEAL") or "").strip().lower() in (
-        "1", "true", "yes", "on")
+    from . import config
+    return config.flag("AWSETTINGS_REQUIRE_SEAL")
 
 
 DEFAULT_FILE_PROFILE = Path.home() / ".awsettings" / "profile.json"
@@ -252,10 +252,11 @@ def resolve_token() -> str | None:
     *path* is not a credential, so `AWSETTINGS_TOKEN_FILE` is safe to export, and it
     lets a token that some other tool already rotates be used without copying it.
     """
+    from . import config
     token = (os.getenv("AWSETTINGS_TOKEN") or "").strip()
     if token:
         return token
-    token_file = (os.getenv("AWSETTINGS_TOKEN_FILE") or "").strip()
+    token_file = config.get("AWSETTINGS_TOKEN_FILE")
     if not token_file:
         return None
     path = Path(token_file).expanduser()
@@ -293,7 +294,8 @@ def resolve_url(url: str | None = None) -> str | None:
         value = (os.getenv(var) or "").strip()
         if value:
             return value
-    return None
+    from . import config
+    return config.get("AWSETTINGS_URL") or None
 
 
 def resolve(url: str | None = None, path: str | None = None,

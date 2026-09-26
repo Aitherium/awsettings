@@ -53,6 +53,13 @@ SEAL_KEY = "_seal"
 #: deep-merge (aitherium.com's preferences route keeps keys absent from a PUT)
 #: would otherwise change the signed bytes and fail every pull.
 SEALED_KEY = "_sealed"
+#: The public key (hex) of the device that made the seal. Not covered by the
+#: signature and not needed to be: it only says WHICH trusted key to check with.
+#: Naming a different trusted key makes the signature fail; naming an untrusted
+#: one is refused before any check runs.
+SIGNER_KEY = "_signer"
+#: Everything a seal adds beside the payload.
+ENVELOPE_KEYS = (SEAL_KEY, SIGNER_KEY)
 
 
 class UntrustedProfileError(Exception):
@@ -112,6 +119,33 @@ def _sig_bytes(seal_value: Any) -> bytes:
         raise UntrustedProfileError(f"seal is not valid hex: {exc}") from exc
 
 
+def trusted_keys_path():
+    from . import config
+    return config.home() / "trusted-keys.json"
+
+
+def trusted_keys() -> list[str]:
+    """Every public key this machine accepts a seal from.
+
+    AWSETTINGS_PUBLIC_KEY (one key, or several separated by commas) plus the
+    device list `awsettings trust refresh` fetched from the registry: the public
+    halves of the keys of every device this user has enrolled and not revoked.
+    """
+    out: list[str] = []
+    pinned = _public_key_hex()
+    if pinned:
+        out.extend(k.strip().lower() for k in pinned.split(",") if k.strip())
+    try:
+        data = json.loads(trusted_keys_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    for entry in (data.get("keys") or []) if isinstance(data, dict) else []:
+        key = entry.get("seal_pubkey") if isinstance(entry, dict) else None
+        if isinstance(key, str) and key.strip():
+            out.append(key.strip().lower())
+    return sorted(set(out))
+
+
 def _public_key_hex() -> str | None:
     """The key this machine TRUSTS, from AWSETTINGS_PUBLIC_KEY.
 
@@ -120,8 +154,8 @@ def _public_key_hex() -> str | None:
     on it at all, and deriving from the local key would make every machine trust
     whatever key it happens to hold — which verifies your own forgeries perfectly.
     """
-    import os
-    v = (os.getenv("AWSETTINGS_PUBLIC_KEY") or "").strip()
+    from . import config
+    v = config.get("AWSETTINGS_PUBLIC_KEY")
     return v or None
 
 
@@ -135,7 +169,7 @@ def verify(profile: dict[str, Any], *, require_seal: bool = False) -> dict[str, 
     if not isinstance(profile, dict):
         raise UntrustedProfileError("profile is not an object")
 
-    payload = {k: v for k, v in profile.items() if k != SEAL_KEY}
+    payload = {k: v for k, v in profile.items() if k not in ENVELOPE_KEYS}
 
     if not is_sealed(profile):
         if require_seal:
@@ -154,17 +188,37 @@ def verify(profile: dict[str, Any], *, require_seal: bool = False) -> dict[str, 
             "(Treating an absent verifier as a pass would let anyone bypass the "
             "signature by removing the verifier.)")
 
-    pub = _public_key_hex()
-    if pub is None:
+    trusted = trusted_keys()
+    if not trusted:
         raise UntrustedProfileError(
-            "this profile is SEALED but AWSETTINGS_PUBLIC_KEY is not set, so there is "
-            "no key to check it against. Refusing: verifying against 'whatever key "
+            "this profile is SEALED but this machine trusts no key, so there is "
+            "nothing to check it against. Refusing: verifying against 'whatever key "
             "this machine happens to hold' would happily accept a forgery signed with "
-            "that same key. Set it to the public half of the key you sign with "
-            "(`python -c \"import awseal; print(awseal.public_key_hex())\"`).")
+            "that same key. Enrol the device (`adk enroll`), run `awsettings trust "
+            "refresh`, or set AWSETTINGS_PUBLIC_KEY.")
+    signer = profile.get(SIGNER_KEY)
+    if signer is not None:
+        signer = str(signer).strip().lower()
+        if signer not in trusted:
+            raise UntrustedProfileError(
+                f"this profile was sealed by {signer[:16]}..., which is not one of this "
+                f"user's enrolled devices. The settings were NOT applied. If the device "
+                f"is new, run `awsettings trust refresh`; if it was revoked, this is "
+                f"the refusal working.")
+        candidates = [signer]
+    else:
+        candidates = trusted       # a seal from before signers were named
 
+    body, sig = payload_bytes(payload), _sig_bytes(seal)
+    last: Exception | None = None
+    for pub in candidates:
+        try:
+            mod.load_public_key(pub).verify(sig, body)
+            return payload
+        except Exception as exc:                               # noqa: BLE001
+            last = exc
     try:
-        mod.load_public_key(pub).verify(_sig_bytes(seal), payload_bytes(payload))
+        raise last if last else UntrustedProfileError("no key verified the seal")
     except UntrustedProfileError:
         raise
     except Exception as exc:                                   # noqa: BLE001
@@ -196,8 +250,15 @@ def seal(payload: dict[str, Any]) -> dict[str, Any]:
             f"cannot sign: no usable signing key ({exc}). Generate one with "
             f"`python -c \"import awseal; awseal.keygen()\"`, or point "
             f"{mod.KEY_PATH_ENV} at an existing one.") from exc
-    out = dict(payload)
-    out[SEAL_KEY] = priv.sign(payload_bytes(payload)).hex()
+    out = {k: v for k, v in payload.items() if k not in ENVELOPE_KEYS}
+    sig = priv.sign(payload_bytes(out)).hex()
+    try:
+        signer = mod.public_key_hex(priv)
+    except Exception:                                          # noqa: BLE001
+        signer = None
+    out[SEAL_KEY] = sig
+    if signer:
+        out[SIGNER_KEY] = signer
     return out
 
 
@@ -205,8 +266,11 @@ def to_wire(profile: dict[str, Any]) -> dict[str, Any]:
     """A sealed profile as {_sealed: <canonical json>, _seal: hex}; unsealed unchanged."""
     if not is_sealed(profile):
         return profile
-    payload = {k: v for k, v in profile.items() if k != SEAL_KEY}
-    return {SEALED_KEY: payload_bytes(payload).decode("utf-8"), SEAL_KEY: profile[SEAL_KEY]}
+    payload = {k: v for k, v in profile.items() if k not in ENVELOPE_KEYS}
+    wire = {SEALED_KEY: payload_bytes(payload).decode("utf-8"), SEAL_KEY: profile[SEAL_KEY]}
+    if profile.get(SIGNER_KEY):
+        wire[SIGNER_KEY] = profile[SIGNER_KEY]
+    return wire
 
 
 def from_wire(stored: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +287,8 @@ def from_wire(stored: dict[str, Any]) -> dict[str, Any]:
         raise UntrustedProfileError(f"{SEALED_KEY} is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise UntrustedProfileError(f"{SEALED_KEY} is not an object")
-    out = dict(payload)
-    if SEAL_KEY in stored:
-        out[SEAL_KEY] = stored[SEAL_KEY]
+    out = {k: v for k, v in payload.items() if k not in ENVELOPE_KEYS}
+    for key in ENVELOPE_KEYS:
+        if key in stored:
+            out[key] = stored[key]
     return out

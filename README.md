@@ -120,6 +120,16 @@ REFUSED: PUT https://example.com/api/settings/preferences stored the profile but
 `AWSETTINGS_TOKEN_FILE=~/.config/my-tool/bearer` reads the token from a file some
 other tool already rotates. A path is not a credential, so it is safe to export.
 
+### Every enrolled device, configured at sign-in
+
+`adk enroll` gives each device its own signing key, registers the public half on
+your device record, and runs `awsettings enroll`, which writes
+`~/.awsettings/config.json` (store URL, device-registry URL, token file, sign and
+require-seal on) and fetches the device list. A pull then accepts a profile signed
+by any of your enrolled devices and refuses every other signer; a device you remove
+drops off at the next refresh (`awsettings trust refresh`, or automatically before a
+pull once the list is an hour old). `awsettings trust list` shows who is trusted.
+
 ### Signed, across machines
 
 A profile carries permissions, so a machine should apply only what you signed.

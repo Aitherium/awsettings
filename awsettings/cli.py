@@ -99,10 +99,71 @@ def _env_flag(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _refresh_trust_if_stale(args) -> None:
+    """Best effort before a pull: a failed refresh keeps the cached device list."""
+    from . import config, devices
+    if not config.get("AWSETTINGS_KEYS_URL") or not devices.stale():
+        return
+    try:
+        devices.refresh()
+    except CouldNotRunError as exc:
+        if not args.quiet:
+            print(f"note: device list not refreshed ({exc}); using the cached one")
+
+
+def cmd_trust(args) -> int:
+    from . import devices
+    from .trust import trusted_keys
+    if args.action == "refresh":
+        try:
+            keys = devices.refresh()
+        except CouldNotRunError as exc:
+            print(f"DEAD: {exc}")
+            return 2
+        print(f"trusting {len(keys)} enrolled device(s)")
+        for k in keys:
+            print(f"  {k.get('device_id', '?')}  {k['seal_pubkey'][:16]}...")
+        return 0
+    keys = trusted_keys()
+    print(f"{len(keys)} trusted key(s)")
+    for k in keys:
+        print(f"  {k[:16]}...")
+    return 0
+
+
+def cmd_enroll(args) -> int:
+    """Configure this machine for signed sync. Called by `adk enroll` after the
+    device is registered; safe to re-run."""
+    from . import config, devices
+    path = config.save({
+        "url": args.url,
+        "keys_url": args.keys_url,
+        "token_file": args.token_file,
+        "sign": True,
+        "require_seal": True,
+    })
+    print(f"wrote {path}")
+    try:
+        keys = devices.refresh()
+        print(f"trusting {len(keys)} enrolled device(s)")
+    except CouldNotRunError as exc:
+        print(f"note: device list not fetched yet ({exc}); `awsettings trust refresh` later")
+    if not args.no_hooks:
+        try:
+            dom = _dom(args)
+            if dom.hookable:
+                install_to(local_settings_path(_root(args)))
+            print("hooks installed")
+        except Exception as exc:                               # noqa: BLE001
+            print(f"note: hooks not installed ({exc})")
+    return 0
+
+
 def cmd_pull(args) -> int:
     dom = _dom(args)
     target = dom.locate(_root(args))
     backend = resolve(args.url, args.profile, namespace=dom.namespace)
+    _refresh_trust_if_stale(args)
     try:
         local = read_json(target)
         remote = backend.get()
@@ -149,7 +210,8 @@ def cmd_push(args) -> int:
             print(f"DEAD: {exc}")
         return 2
     snapshot = redact(local, domain=dom)
-    if getattr(args, "sign", False) or _env_flag("AWSETTINGS_SIGN"):
+    from . import config as _config
+    if getattr(args, "sign", False) or _config.flag("AWSETTINGS_SIGN"):
         from .trust import UntrustedProfileError, seal
         try:
             snapshot = seal(snapshot)
@@ -698,6 +760,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--debounce", action="store_true")
     p.add_argument("--sign", action="store_true",
                    help="seal the profile with your awseal key (also AWSETTINGS_SIGN=1)")
+    p = sub.add_parser("trust")
+    p.add_argument("action", choices=["list", "refresh"])
+    p = sub.add_parser("enroll")
+    p.add_argument("--url", required=True, help="settings store endpoint")
+    p.add_argument("--keys-url", required=True, help="device-key registry endpoint")
+    p.add_argument("--token-file", required=True,
+                   help="file holding the bearer (a path, never the token itself)")
+    p.add_argument("--no-hooks", action="store_true")
     p = sub.add_parser("hook")
     p.add_argument("action", choices=["install", "uninstall"])
     p = sub.add_parser("preflight")
@@ -728,6 +798,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_pull(args)
         if args.cmd == "push":
             return cmd_push(args)
+        if args.cmd == "trust":
+            return cmd_trust(args)
+        if args.cmd == "enroll":
+            return cmd_enroll(args)
         if args.cmd == "domains":
             return cmd_domains(args)
         if args.cmd == "get":
