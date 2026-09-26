@@ -136,9 +136,10 @@ def test_enroll_writes_config_and_survives_an_offline_registry(home, monkeypatch
     )
     assert cli.cmd_enroll(args) == 0
     saved = json.loads(config.config_path().read_text(encoding="utf-8"))
-    assert saved == {"keys_url": "https://hub.invalid/keys", "require_seal": True,
-                     "sign": True, "token_file": str(home / "token"),
-                     "url": "https://hub.invalid/prefs"}
+    assert saved["url"] == "https://hub.invalid/prefs"
+    assert saved["keys_url"] == "https://hub.invalid/keys"
+    # Offline registry: never require a seal nobody can check (that kills sync).
+    assert "require_seal" not in saved
     assert "not fetched yet" in capsys.readouterr().out
 
 
@@ -171,3 +172,32 @@ def test_enroll_without_any_bearer_source_refuses(home, capsys):
     )
     assert cli.cmd_enroll(args) == 1
     assert not config.config_path().exists()
+
+
+def test_enroll_requires_seals_once_the_device_list_loads(home, monkeypatch, tmp_path):
+    key = tmp_path / "own.key"
+    awseal.keys.generate(key)
+    monkeypatch.setenv(awseal.keys.KEY_PATH_ENV, str(key))
+    own = awseal.keys.public_key_hex(path=key)
+    tok = tmp_path / "token"
+    tok.write_text("t", encoding="utf-8")
+
+    class R:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"keys": [{"device_id": "laptop", "seal_pubkey": own}]}
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
+    args = types.SimpleNamespace(
+        url="https://hub.invalid/prefs", keys_url="https://hub.invalid/keys",
+        token_file=str(tok), token_command=None, no_hooks=True, root=str(home),
+        user=False, domain="claude", quiet=False,
+    )
+    assert cli.cmd_enroll(args) == 0
+    saved = json.loads(config.config_path().read_text(encoding="utf-8"))
+    assert saved["require_seal"] is True and saved["sign"] is True
+    assert saved["public_key"] == own
+    assert trusted_keys() == [own]

@@ -139,20 +139,35 @@ def cmd_enroll(args) -> int:
         print("REFUSED: give --token-command or --token-file: without a bearer every "
               "request is anonymous and the store answers 401")
         return 1
+    # This device always trusts its own key, so its own pushes verify offline.
+    from .trust import _load_awseal
+    own = ""
+    mod = _load_awseal()
+    if mod is not None:
+        try:
+            own = mod.public_key_hex()
+        except Exception:                                      # noqa: BLE001
+            own = ""
     path = config.save({
         "url": args.url,
         "keys_url": args.keys_url,
         "token_file": args.token_file,
         "token_command": args.token_command,
-        "sign": True,
-        "require_seal": True,
+        "sign": True if own else None,
+        "public_key": own or None,
     })
     print(f"wrote {path}")
     try:
         keys = devices.refresh()
         print(f"trusting {len(keys)} enrolled device(s)")
     except CouldNotRunError as exc:
+        keys = []
         print(f"note: device list not fetched yet ({exc}); `awsettings trust refresh` later")
+    # Require a seal only once the device list is real. Requiring it with nobody
+    # trusted would refuse every pull on every device: sync dead, labelled secure.
+    config.save({"require_seal": True if keys else None})
+    if not keys:
+        print("note: unsigned profiles still accepted until the device list loads")
     if not args.no_hooks:
         try:
             dom = _dom(args)
