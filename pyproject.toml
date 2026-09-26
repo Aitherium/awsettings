@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awsettings"
-version = "0.3.1"
+version = "0.3.2"
 description = "Your agent's permissions and config, following you to the next machine."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -495,7 +495,7 @@ def cmd_set(args) -> int:
             cur[seg] = nxt
         cur = nxt
     cur[segs[-1]] = value
-    if dom.name in ("desk", "mods") and "version" not in data:
+    if dom.name in ("desk", "mods", "memory") and "version" not in data:
         data["version"] = 1
     if before == data:
         if not args.quiet:
@@ -678,6 +678,20 @@ def self_test() -> int:
         problems.append("desk: an unknown top-level key arrived and was written")
     if not any("actors.mcp:speak.volume" in ln for ln in diff_summary(here, both, domain=desk)):
         problems.append("desk: the diff does not name the FIELD a pull changed")
+
+    # --- the memory domain: projects merge per project, paths stay home ----
+    mem = get_domain("memory")
+    here = {"version": 1, "budget": 22000, "bundles_root": "C:/x",
+            "projects": {"A": {"digest": "a1", "public_key": "ab"}}}
+    if "bundles_root" in redact(here, domain=mem):
+        problems.append("memory: a local path (bundles_root) left the machine")
+    there = {"version": 1, "projects": {"B": {"digest": "b1", "public_key": "ab"}},
+             "private_key": "planted"}
+    both = merge(here, there, domain=mem)
+    if set(both.get("projects", {})) != {"A", "B"}:
+        problems.append("memory: one machine's projects map replaced the other's")
+    if "private_key" in both:
+        problems.append("memory: a credential-named key arrived and was written")
 
     # --- a server that drops a key is caught, by path ---------------------
     if missing_paths({"authors": {"token-service": {"volume": 1}}, "voice": {"volume": 1}},

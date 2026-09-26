@@ -191,6 +191,12 @@ Two things differ from `claude`, each for a reason:
   fact about one machine's network. Synced to a laptop with nothing on that port, it
   mutes a working avatar with a config that looks correct.
 
+`memory` is a memory lander's `config.json`: its targets, index budget, the Strata
+prefix it pushes under, and per project the latest sealed bundle's digest and the
+**public** key that sealed it — what a new machine needs to pull that memory back and
+refuse a bundle sealed by anyone else. Paths on one machine (bundle root, signing-key
+file) are not synced and are refused on arrival; `projects` merges per project.
+
 A merge cannot carry a delete, so un-setting a field everywhere is an explicit
 `null`: `awsettings --domain desk set 'actors."mcp:speak".volume' null`.
 

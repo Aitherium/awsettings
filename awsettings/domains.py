@@ -19,6 +19,13 @@ Three domains ship:
   agent's `aw` subagent runs on when the prompt does not say. The Claude Code mod
   reads it on every spawn, so a pull changes the next spawn with no restart.
 
+* ``memory`` -- ``~/.aither/memory-lander/config.json``: which targets the memory
+  lander writes, its index budget, the Strata prefix bundles are pushed under, and
+  per project the latest sealed bundle's digest and the PUBLIC key that sealed it.
+  That is what a new machine needs to pull this owner's memory back and REFUSE a
+  bundle sealed by anyone else. A public key is meant to be published; the private
+  signing key is a file this domain never names.
+
 WHY A TABLE AND NOT A SUBCLASS. Every field here is data the self-test can assert
 against. A domain that is code can quietly decide a credential is fine to send; a
 domain that is a frozen table of names cannot decide anything.
@@ -195,8 +202,44 @@ MODS = Domain(
 )
 
 
+def memory_config_path(root: Path | None = None) -> Path:
+    """The memory lander's config. ``root`` is ignored: it is per USER.
+
+    ``AWSETTINGS_MEMORY_FILE`` is for tests and for a lander run under another
+    home; the lander itself reads the default path.
+    """
+    override = (os.environ.get("AWSETTINGS_MEMORY_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "memory-lander" / "config.json"
+
+
+MEMORY = Domain(
+    name="memory",
+    namespace="awmemory",
+    summary="the memory lander's config.json: targets, index budget, Strata prefix, "
+            "and per project the latest bundle digest + the public key that sealed it",
+    # Deliberately absent: anything naming a PATH on this machine (bundles root,
+    # state file, signing-key file). Delivered elsewhere a path points at nothing,
+    # or at something; strict_inbound refuses one arriving as well.
+    synced_keys=frozenset({"version", "targets", "budget", "strata_prefix", "projects"}),
+    # Named on purpose although the lander never writes them: if a credential-shaped
+    # key is ever added to config.json it stays home rather than riding a profile.
+    secret_keys=frozenset({"internal_key", "signing_key", "private_key", "token"}),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    # `projects` is keyed by project: two machines each landing a different project
+    # must merge per project, never let one machine's map replace the other's.
+    deep=True,
+    strict_inbound=True,
+    locate=memory_config_path,
+    hookable=False,
+)
+
+
 def all_domains() -> dict:
-    return {"claude": _claude(), "desk": DESK, "mods": MODS}
+    return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY}
 
 
 def get_domain(name: str | None) -> Domain:
