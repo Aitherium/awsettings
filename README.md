@@ -230,6 +230,35 @@ where a daemon listens is a fact about one machine. An unknown top-level key is 
 on arrival — this file steers what a coding agent runs, so nothing a pull brings in may
 be a key the mod would not have written itself.
 
+## Presets: a whole Claude Code setup in one command
+
+```bash
+awsettings preset list
+awsettings preset show aitherium-claude
+awsettings preset apply aitherium-claude --dry-run   # print the diff, write nothing
+awsettings preset apply aitherium-claude --push      # apply, then `awsettings --user push`
+awsettings preset pull                               # on the next machine: `--user pull`
+```
+
+A preset merges the portable keys of `~/.claude/settings.json` (voice, language,
+fallbackModel, notifications, footer links, spinner tips, output style, plugins and
+their marketplace) and a binding into `~/.claude/keybindings.json`. It never replaces a
+value you already set (`--force` does), backs the file up first, and prints the diff.
+`autoMode`, `hooks`, `env`, `permissions` and credential helpers are never written: a
+preset naming one is refused whole, exit 1. The preset keys (all but `voice`) ride
+the ordinary user-level sync, the `claude_user` namespace, so applying and pushing on
+one machine makes them the baseline for the rest; a marketplace sourced from a local
+directory never leaves the machine.
+
+Plugins are code (they bring hooks), so a pull treats them like hooks. An arriving
+`extraKnownMarketplaces` is refused unless the blob carried a seal that verified
+(`push --sign`, `require_seal`). An arriving `enabledPlugins` may always switch a plugin
+OFF, but may switch one ON only when its marketplace is already known here: in this
+machine's settings, in its plugin registry (`plugins/known_marketplaces.json`), or
+delivered by that same sealed blob. Credentials in a marketplace URL
+(`https://user:token@host/...`) are stripped both on the way out and on arrival. Every
+`--user` path honours `CLAUDE_CONFIG_DIR`, as Claude Code does.
+
 ## Exit codes
 
 | code | meaning |

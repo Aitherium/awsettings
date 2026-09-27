@@ -107,7 +107,92 @@ SYNCED_KEYS = frozenset({
     "spinnerTipsEnabled",
     "todoFeatureEnabled",
     "attribution",
+    # The portable half of a `preset` (see preset.py): pure preferences, so a
+    # machine that applies one and pushes makes it the `claude_user` baseline.
+    # `voice` is absent on purpose (HOME_KEYS); a preset still sets it per machine.
+    "language",
+    "fallbackModel",
+    "inputNeededNotifEnabled",
+    "crossSessionInbound",
+    "footerLinksRegexes",
+    "spinnerTipsOverride",
+    "enabledPlugins",
+    # Only entries whose source is NOT a local path -- see portable_marketplaces().
+    "extraKnownMarketplaces",
 })
+
+#: Top-level keys mapping names to plugin marketplaces.
+MARKETPLACE_KEYS = frozenset({"extraKnownMarketplaces"})
+
+#: A marketplace sourced from one of these names a PATH on one machine.
+LOCAL_MARKETPLACE_SOURCES = frozenset({"directory", "file"})
+
+
+def _local_marketplace(entry: Any) -> bool:
+    src = entry.get("source") if isinstance(entry, dict) else None
+    return isinstance(src, dict) and src.get("source") in LOCAL_MARKETPLACE_SOURCES
+
+
+def strip_userinfo(url: Any) -> Any:
+    """``scheme://user:pass@host/...`` -> ``scheme://host/...``. A token pasted into a
+    git/url marketplace URL is a credential; the settings sync is not a secret
+    channel. The scp form ``git@host:path`` carries no secret and is left alone."""
+    if not isinstance(url, str) or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    cut = len(rest)
+    for sep in "/?#":
+        i = rest.find(sep)
+        if i != -1:
+            cut = min(cut, i)
+    netloc, tail = rest[:cut], rest[cut:]
+    if "@" not in netloc:
+        return url
+    return f"{scheme}://{netloc.rpartition('@')[2]}{tail}"
+
+
+def _scrub_marketplace(entry: Any) -> Any:
+    out = copy.deepcopy(entry)
+    src = out.get("source") if isinstance(out, dict) else None
+    if isinstance(src, dict):
+        for key in ("url", "repo"):
+            if key in src:
+                src[key] = strip_userinfo(src[key])
+    return out
+
+
+def portable_marketplaces(markets: Any) -> dict[str, Any]:
+    """Only the marketplaces another machine can reach (github, git, url), with any
+    credential in their URL removed. A directory source is a path on THIS box: sent,
+    it points at nothing -- or at something -- on the next one."""
+    if not isinstance(markets, dict):
+        return {}
+    return {n: _scrub_marketplace(m) for n, m in markets.items()
+            if not _local_marketplace(m)}
+
+
+#: Top-level key mapping ``plugin@marketplace`` to enabled/disabled.
+PLUGIN_KEY = "enabledPlugins"
+
+
+def _marketplace_of(plugin: Any) -> str | None:
+    if not isinstance(plugin, str) or "@" not in plugin:
+        return None
+    return plugin.rpartition("@")[2] or None
+
+
+def admissible_plugins(arriving: Any, known: set[str]) -> dict[str, Any]:
+    """The part of an arriving ``enabledPlugins`` this machine may apply.
+
+    A plugin brings hooks, so an enable is code execution by another name. A
+    DISABLE (``False``) is always accepted; anything else only when the plugin's
+    marketplace is one this machine already knows. Otherwise whoever can write the
+    hub blob picks the code every pulling machine runs -- the route around
+    "unmarked hooks are refused on arrival"."""
+    if not isinstance(arriving, dict):
+        return {}
+    return {p: copy.deepcopy(v) for p, v in arriving.items()
+            if v is False or _marketplace_of(p) in known}
 
 
 def _domain(domain: Any) -> Any:
@@ -170,6 +255,10 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
             v = portable_hooks(v)
             if not v:
                 continue
+        if k in MARKETPLACE_KEYS and k in dom.synced_keys:
+            v = portable_marketplaces(v)
+            if not v:
+                continue
         out[k] = copy.deepcopy(v)
     return out
 
@@ -208,7 +297,8 @@ def _set(d: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
 
 
 def merge(local: dict[str, Any], remote: dict[str, Any], *,
-          prune_denies: bool = False, domain: Any = None) -> dict[str, Any]:
+          prune_denies: bool = False, domain: Any = None, sealed: bool = False,
+          known_marketplaces: Any = ()) -> dict[str, Any]:
     """Remote over local, UNION on the array keys, credentials untouched.
 
     Neither input is mutated. A credential block arriving from the remote is
@@ -221,9 +311,25 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
     into the local file. Anyone able to write the profile could plant a credential
     block on every machine that pulled it. `redact()` stripping a key is not the
     same guarantee as `merge()` refusing it, and only one of them was tested.
+
+    Plugins are code too. ``sealed`` says the remote carried a seal that VERIFIED
+    (the backend knows; this function cannot): only then may it add a marketplace.
+    ``known_marketplaces`` names the ones this machine's own plugin registry holds;
+    with the local ``extraKnownMarketplaces`` they bound what an arriving
+    ``enabledPlugins`` may switch ON (see admissible_plugins).
     """
     dom = _domain(domain)
     out = copy.deepcopy(local)
+    remote = dict(remote)
+    if any(k in dom.synced_keys for k in MARKETPLACE_KEYS) and not sealed:
+        for k in MARKETPLACE_KEYS:
+            remote.pop(k, None)
+    known = {str(n) for n in known_marketplaces or ()}
+    for k in MARKETPLACE_KEYS:
+        if isinstance(local.get(k), dict):
+            known |= set(local[k])
+        if sealed and k in dom.synced_keys:
+            known |= set(portable_marketplaces(remote.get(k)))
 
     for k, v in remote.items():
         if k in dom.secret_keys:
@@ -239,6 +345,19 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
             if arriving:
                 out[k] = _union_hooks(out.get(k), arriving)
             continue
+        if k == PLUGIN_KEY and k in dom.synced_keys:
+            v = admissible_plugins(v, known)
+            if not v:
+                continue
+        if k in MARKETPLACE_KEYS and k in dom.synced_keys:
+            # Refused on arrival too, and a marketplace THIS machine sources from a
+            # local checkout is never replaced by a remote copy of the same name:
+            # that checkout is how its owner develops the plugin.
+            mine = out.get(k) if isinstance(out.get(k), dict) else {}
+            v = {n: m for n, m in portable_marketplaces(v).items()
+                 if not _local_marketplace(mine.get(n))}
+            if not v:
+                continue
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             if dom.deep:
                 out[k] = _deep_merge(out[k], v)

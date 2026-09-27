@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import CouldNotRunError
-from .trust import from_wire, to_wire, verify
+from .trust import from_wire, is_sealed, to_wire, verify
 
 #: Namespace inside the remote object, so this never stomps another app's prefs.
 #: This is the ORIGINAL domain's namespace; every other domain carries its own.
@@ -68,6 +68,9 @@ class Backend:
     """A profile store. Two methods, both of which must raise on failure."""
 
     namespace = NAMESPACE
+    #: Whether the last get() returned a blob whose seal VERIFIED. A merge needs it
+    #: to decide whether the blob may add plugin marketplaces (core.merge `sealed`).
+    last_sealed = False
 
     def get(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -99,7 +102,10 @@ class FileBackend(Backend):
         # Every read goes through the trust port. When the profile carries no seal
         # this returns it unchanged; when it carries one, a bad or uncheckable seal
         # RAISES rather than degrading to "apply it anyway".
-        return verify(from_wire(ns), require_seal=require_seal())
+        wire = from_wire(ns)
+        payload = verify(wire, require_seal=require_seal())
+        self.last_sealed = is_sealed(wire)
+        return payload
 
     def put(self, snapshot: dict[str, Any]) -> None:
         try:
@@ -197,7 +203,10 @@ class HttpBackend(Backend):
             return {}
         # Same trust port as the file backend. A profile fetched over the network
         # is the case the seal exists for, so this must not be the lenient path.
-        return verify(from_wire(ns), require_seal=require_seal())
+        wire = from_wire(ns)
+        payload = verify(wire, require_seal=require_seal())
+        self.last_sealed = is_sealed(wire)
+        return payload
 
     def put(self, snapshot: dict[str, Any]) -> None:
         if self._shape is None:

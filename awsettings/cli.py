@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__
+from . import __version__, preset
 from .backends import CouldNotJudgeError as BackendsCouldNotJudgeError
 from .backends import ProbeVerdict as BackendProbeVerdict
 from .backends import discover as discover_backends
@@ -36,7 +36,13 @@ from .core import SECRET_KEYS, diff_summary, merge, redact
 from .domains import all_domains, claude_namespace, get_domain
 from .hooks import install_to, installed, uninstall_from
 from .profile import ProfileRejectedError, missing_paths, resolve
-from .store import CouldNotRunError, local_settings_path, read_json, write_json
+from .store import (
+    CouldNotRunError,
+    known_marketplaces,
+    local_settings_path,
+    read_json,
+    write_json,
+)
 from .trust import UntrustedProfileError
 
 DEBOUNCE_STAMP = Path.home() / ".awsettings" / "last-push"
@@ -76,6 +82,13 @@ def _stamp(dom, args=None) -> Path:
     return DEBOUNCE_STAMP.with_name(f"last-push-{dom.name}")
 
 
+def _plugin_trust(backend) -> dict:
+    """What core.merge needs to judge arriving plugins: did the blob's seal verify,
+    and which marketplaces does this machine's own plugin registry already hold."""
+    return {"sealed": bool(getattr(backend, "last_sealed", False)),
+            "known_marketplaces": known_marketplaces()}
+
+
 def cmd_status(args) -> int:
     dom = _dom(args)
     target = dom.locate(_root(args))
@@ -97,7 +110,7 @@ def cmd_status(args) -> int:
         print(f"remote: {backend.describe()}")
         print(f"DEAD: {exc}")
         return 2
-    merged = merge(local, remote, domain=dom)
+    merged = merge(local, remote, domain=dom, **_plugin_trust(backend))
     lines = diff_summary(local, merged, domain=dom)
     print(f"domain: {dom.name} -- {dom.summary}")
     print(f"local:  {target} ({'present' if target.is_file() else 'absent'})")
@@ -211,7 +224,8 @@ def cmd_pull(args) -> int:
         if not args.quiet:
             print(f"DEAD: {exc}")
         return 2
-    merged = merge(local, remote, prune_denies=args.prune_denies, domain=dom)
+    merged = merge(local, remote, prune_denies=args.prune_denies, domain=dom,
+                   **_plugin_trust(backend))
     lines = diff_summary(local, merged, domain=dom)
     if not lines:
         if not args.quiet:
@@ -843,6 +857,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-hooks", action="store_true")
     p = sub.add_parser("hook")
     p.add_argument("action", choices=["install", "uninstall"])
+    p = sub.add_parser("preset", help="named user-settings presets + the synced baseline")
+    preset.add_arguments(p)
     p = sub.add_parser("preflight")
     p.add_argument("profile", help="profile id or launcher name (e.g. deepseek, cds)")
     p.add_argument("--no-cache", action="store_true",
@@ -885,6 +901,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_hook(args)
         if args.cmd == "backends":
             return cmd_backends(args)
+        if args.cmd == "preset":
+            return preset.cmd_preset(args)
         if args.cmd == "preflight":
             return cmd_preflight(args)
     except UntrustedProfileError as exc:

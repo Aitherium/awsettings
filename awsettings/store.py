@@ -72,8 +72,28 @@ def write_json(path: Path, data: dict[str, Any]) -> Path:
     return path
 
 
+def user_claude_dir() -> Path:
+    """Claude Code's user config dir. It honours CLAUDE_CONFIG_DIR, so this does:
+    a `--user push` that read ~/.claude while the harness reads the override would
+    publish a file nobody uses as the baseline (and a pull would write into it)."""
+    override = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".claude"
+
+
 def local_settings_path(root: Path | None = None) -> Path:
     """The file a pull writes: project-scoped when given a root, else user-level."""
     if root is not None:
         return root / LOCAL_SETTINGS
-    return Path.home() / USER_SETTINGS
+    return user_claude_dir() / USER_SETTINGS.name
+
+
+def known_marketplaces() -> set[str]:
+    """Marketplace names in this machine's own plugin registry. Unreadable or absent
+    is the EMPTY set: an unknown marketplace is refused, so failing here refuses
+    more, never less."""
+    path = user_claude_dir() / "plugins" / "known_marketplaces.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    return {str(k) for k in data} if isinstance(data, dict) else set()
