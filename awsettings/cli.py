@@ -33,7 +33,7 @@ from .backends import probe as probe_backend
 from .backends import probe_self_test as backends_probe_self_test
 from .backends import self_test as backends_self_test
 from .core import SECRET_KEYS, diff_summary, merge, redact
-from .domains import all_domains, get_domain
+from .domains import all_domains, claude_namespace, get_domain
 from .hooks import install_to, installed, uninstall_from
 from .profile import ProfileRejectedError, missing_paths, resolve
 from .store import CouldNotRunError, local_settings_path, read_json, write_json
@@ -58,10 +58,20 @@ def _dom(args):
         raise CouldNotRunError(str(exc.args[0])) from exc
 
 
-def _stamp(dom) -> Path:
-    """One debounce stamp per domain, so a push of one file cannot swallow the
-    push of another that happened inside the same five seconds."""
+def _namespace(dom, args) -> str:
+    """The hub namespace this invocation reads and writes. The claude domain has one
+    per project and a separate one for ``--user``; every other domain is per user."""
     if dom.name == "claude":
+        return claude_namespace(_root(args))
+    return dom.namespace
+
+
+def _stamp(dom, args=None) -> Path:
+    """One debounce stamp per domain and scope, so a push of one file cannot swallow
+    the push of another that happened inside the same five seconds."""
+    if dom.name == "claude":
+        if args is not None and args.user:
+            return DEBOUNCE_STAMP.with_name("last-push-user")
         return DEBOUNCE_STAMP
     return DEBOUNCE_STAMP.with_name(f"last-push-{dom.name}")
 
@@ -69,7 +79,16 @@ def _stamp(dom) -> Path:
 def cmd_status(args) -> int:
     dom = _dom(args)
     target = dom.locate(_root(args))
-    backend = resolve(args.url, args.profile, namespace=dom.namespace)
+    try:
+        backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
+    except CouldNotRunError as exc:
+        # A failing credential helper still has a resolved remote; name it, or the
+        # report says "DEAD" without saying WHAT it could not reach.
+        from .profile import resolve_url
+        print(f"local:  {target}")
+        print(f"remote: {resolve_url(args.url) or 'file'} [{_namespace(dom, args)}]")
+        print(f"DEAD: {exc}")
+        return 2
     local = read_json(target)
     try:
         remote = backend.get()
@@ -182,7 +201,7 @@ def cmd_enroll(args) -> int:
 def cmd_pull(args) -> int:
     dom = _dom(args)
     target = dom.locate(_root(args))
-    backend = resolve(args.url, args.profile, namespace=dom.namespace)
+    backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     _refresh_trust_if_stale(args)
     try:
         local = read_json(target)
@@ -213,7 +232,7 @@ def cmd_pull(args) -> int:
 
 def cmd_push(args) -> int:
     dom = _dom(args)
-    stamp = _stamp(dom)
+    stamp = _stamp(dom, args)
     if args.debounce:
         try:
             recent = time.time() - stamp.stat().st_mtime < DEBOUNCE_SECONDS
@@ -222,7 +241,7 @@ def cmd_push(args) -> int:
         if recent:
             return 0
     target = dom.locate(_root(args))
-    backend = resolve(args.url, args.profile, namespace=dom.namespace)
+    backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     try:
         local = read_json(target)
     except CouldNotRunError as exc:
@@ -414,7 +433,7 @@ def cmd_domains(args) -> int:
     for name, dom in sorted(all_domains().items()):
         path = dom.locate(_root(args))
         rows.append({
-            "domain": name, "namespace": dom.namespace, "summary": dom.summary,
+            "domain": name, "namespace": _namespace(dom, args), "summary": dom.summary,
             "path": str(path), "present": path.is_file(),
             "stays_home": sorted(dom.secret_keys) + sorted(
                 f"{k}.{s}" for k, subs in dom.home_subkeys.items() for s in subs),
@@ -709,6 +728,24 @@ def self_test() -> int:
     if not unknown_refused:
         problems.append("an unknown domain fell back to a default instead of refusing")
 
+    # --- machine-local claude keys never travel, either way ----------------
+    machine = {"statusLine": {"command": "C:/me/status.ps1"}, "autoMode": True,
+               "permissions": {"defaultMode": "bypassPermissions", "allow": ["A"]},
+               "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/me/x"}]}]}}
+    sent = redact(machine)
+    if "statusLine" in sent or "autoMode" in sent or "hooks" in sent \
+            or "defaultMode" in sent.get("permissions", {}):
+        problems.append("claude: a status line, autoMode, defaultMode or an unmarked "
+                        "hook left the machine")
+    got = merge({}, machine)
+    if "statusLine" in got or "autoMode" in got or "hooks" in got \
+            or "defaultMode" in got.get("permissions", {}):
+        problems.append("claude: a status line, autoMode, defaultMode or an unmarked "
+                        "hook was accepted on arrival")
+    from .domains import claude_namespace as _ns
+    if _ns(None) == _ns(Path(tempfile.gettempdir())):
+        problems.append("user scope and project scope share one hub namespace")
+
     if problems:
         print("SELF-TEST FAILED:")
         for p in problems:
@@ -739,12 +776,13 @@ def _utf8_stdio() -> None:
     (measured 2026-09-25 on `awsettings --user status`). Replace, don't crash."""
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
             continue
 
 
 def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
     if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
@@ -759,7 +797,6 @@ def main(argv: list[str] | None = None) -> int:
         _sv = locals().get("argv")
         if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
             return 0
-    _utf8_stdio()
     ap = argparse.ArgumentParser(prog="awsettings",
                                  description=__doc__.splitlines()[0])
     ap.add_argument("--version", action="version", version=f"awsettings {__version__}")

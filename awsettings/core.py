@@ -56,6 +56,34 @@ SECRET_SUBKEYS: dict[str, frozenset[str]] = {
     "sandbox": frozenset({"credentials"}),
 }
 
+#: Sub-keys that are not credentials but are still one machine's decision: never
+#: sent, refused on arrival. `permissions.defaultMode` is how permissive THIS box
+#: runs; a profile that could set it could switch another machine into bypass mode.
+HOME_SUBKEYS: dict[str, frozenset[str]] = {
+    **SECRET_SUBKEYS,
+    "permissions": frozenset({"defaultMode"}),
+}
+
+#: Top-level keys that stay home although they are not credentials. Named so the
+#: refusal is auditable; `SYNCED_KEYS` not listing them is what enforces it (the
+#: claude domain is strict on arrival). Each is a local path or command that means
+#: nothing on another machine (`statusLine`, `sshConfigs`), a safety posture one
+#: machine chose (`autoMode`, `skipDangerousModePermissionPrompt`), or topology
+#: (`remote`, `voice`).
+HOME_KEYS = frozenset({
+    "statusLine",
+    "autoMode",
+    "skipDangerousModePermissionPrompt",
+    "sshConfigs",
+    "remote",
+    "voice",
+})
+
+#: A hook entry travels only when it says so. Hooks are commands, very often with an
+#: absolute path on one machine; synced verbatim they fail on every other box -- or
+#: run whatever that path names there.
+PORTABLE_MARKERS = ("awsettings", "portable")
+
 #: What is worth syncing. An unknown key is left at home rather than guessed at:
 #: it is far more likely a local experiment than a preference somebody wants
 #: pushed to every machine they own.
@@ -71,9 +99,9 @@ SYNCED_KEYS = frozenset({
     "enabledMcpjsonServers",
     "disabledMcpjsonServers",
     "enableAllProjectMcpServers",
+    # Only PORTABLE entries -- see portable_hooks().
     "hooks",
     "outputStyle",
-    "statusLine",
     "alwaysThinkingEnabled",
     "autoCompactEnabled",
     "spinnerTipsEnabled",
@@ -91,6 +119,44 @@ def _domain(domain: Any) -> Any:
     return get_domain("claude")
 
 
+def portable_hooks(hooks: Any) -> dict[str, Any]:
+    """Only the hook entries marked portable (``"awsettings": true`` or
+    ``"portable": true``), grouped as they were. Empty groups and events drop out."""
+    if not isinstance(hooks, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        kept_groups = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            entries = [h for h in group.get("hooks", []) if isinstance(h, dict)
+                       and any(h.get(m) is True for m in PORTABLE_MARKERS)]
+            if entries:
+                g = copy.deepcopy(group)
+                g["hooks"] = copy.deepcopy(entries)
+                kept_groups.append(g)
+        if kept_groups:
+            out[event] = kept_groups
+    return out
+
+
+def _union_hooks(local: Any, arriving: dict[str, Any]) -> dict[str, Any]:
+    """Local hooks, plus arriving portable groups not already present. Never
+    replaces an event's list: that would delete this machine's own hooks."""
+    out = copy.deepcopy(local) if isinstance(local, dict) else {}
+    for event, groups in arriving.items():
+        mine = out.get(event)
+        mine = list(mine) if isinstance(mine, list) else []
+        for g in groups:
+            if g not in mine:
+                mine.append(copy.deepcopy(g))
+        out[event] = mine
+    return out
+
+
 def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
     """The snapshot that may leave this machine. Never mutates the input."""
     dom = _domain(domain)
@@ -100,6 +166,10 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
             continue
         if k in dom.home_subkeys and isinstance(v, dict):
             v = {sk: sv for sk, sv in v.items() if sk not in dom.home_subkeys[k]}
+        if k in dom.hook_keys:
+            v = portable_hooks(v)
+            if not v:
+                continue
         out[k] = copy.deepcopy(v)
     return out
 
@@ -162,6 +232,13 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
             continue
         if k in dom.home_subkeys and isinstance(v, dict):
             v = {sk: sv for sk, sv in v.items() if sk not in dom.home_subkeys[k]}
+        if k in dom.hook_keys:
+            # Refused on arrival exactly as on the way out: an unmarked hook in a
+            # profile is a command somebody else chose for this machine.
+            arriving = portable_hooks(v)
+            if arriving:
+                out[k] = _union_hooks(out.get(k), arriving)
+            continue
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             if dom.deep:
                 out[k] = _deep_merge(out[k], v)

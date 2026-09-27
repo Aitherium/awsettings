@@ -166,7 +166,10 @@ def test_write_is_atomic_and_leaves_no_tmp(tmp_path):
 # --------------------------------------------------------------------------
 
 def _run(root: Path, profile: Path, *args: str):
-    env = dict(os.environ, AWSETTINGS_PROFILE=str(profile))
+    # Two machines, ONE project: the hub namespace is per project, and two tmp dirs
+    # with different names would otherwise read as two different repos.
+    env = dict(os.environ, AWSETTINGS_PROFILE=str(profile),
+               AWSETTINGS_PROJECT="example.invalid/one-project")
     return subprocess.run([sys.executable, "-m", "awsettings.cli",
                            "--root", str(root), *args],
                           capture_output=True, text=True, encoding="utf-8",

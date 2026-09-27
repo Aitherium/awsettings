@@ -102,6 +102,17 @@ export AWSETTINGS_TOKEN=...     # environment only — never a command-line flag
                                 # which lands in shell history and the process list
 ```
 
+**One namespace per scope.** `--user` settings live under `claude_user`; each
+project's live under its own `claude_project_<hash>`, keyed by the origin remote
+(or the directory name; `AWSETTINGS_PROJECT` overrides). A pull in one repo can
+never merge another repo's permission rules.
+
+**Only portable keys travel.** A hook entry travels only when it carries
+`"awsettings": true` or `"portable": true`; `statusLine`, `autoMode`,
+`permissions.defaultMode`, `skipDangerousModePermissionPrompt`, `sshConfigs`,
+`remote`, `voice` and every credential key stay on the machine and are refused on
+arrival. They name a local path or one machine's safety posture.
+
 A transport failure is never read as "no settings": both backends raise, and the
 CLI exits **2** rather than merging nothing and reporting success.
 

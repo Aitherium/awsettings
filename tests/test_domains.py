@@ -190,10 +190,16 @@ def test_the_desk_diff_names_the_field():
         "+ voice.muted = true", "~ voice.volume: 1 -> 0.3"]
 
 
-def test_the_claude_domain_is_unchanged_a_record_still_replaces_one_level_down():
+def test_the_claude_domain_still_replaces_a_record_one_level_down():
+    out = merge({"attribution": {"commit": "a", "pr": "x"}},
+                {"attribution": {"commit": "b"}})
+    assert out["attribution"] == {"commit": "b", "pr": "x"}
+
+
+def test_the_claude_domain_refuses_an_arriving_status_line():
     out = merge({"statusLine": {"type": "command", "command": "a"}},
                 {"statusLine": {"command": "b"}})
-    assert out["statusLine"] == {"type": "command", "command": "b"}
+    assert out["statusLine"] == {"type": "command", "command": "a"}
 
 
 def test_an_unknown_domain_raises():

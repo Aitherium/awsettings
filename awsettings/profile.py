@@ -378,11 +378,15 @@ def resolve_url(url: str | None = None, allow_hub: bool = True) -> str | None:
         value = (os.getenv(var) or "").strip()
         if value:
             return value
+    if not allow_hub:
+        # An explicit profile FILE was named: it beats the enrolled config url as
+        # well as the portal default, or `--profile x` would quietly go to a hub.
+        return None
     from . import config
     configured = config.get("AWSETTINGS_URL")
     if configured:
         return configured
-    if not allow_hub or (os.getenv("AWSETTINGS_LOCAL") or "").strip().lower() in (
+    if (os.getenv("AWSETTINGS_LOCAL") or "").strip().lower() in (
             "1", "true", "yes"):
         return None
     if (os.getenv("AWSETTINGS_TOKEN") or config.get("AWSETTINGS_TOKEN_FILE")

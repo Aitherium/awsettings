@@ -77,6 +77,9 @@ class Domain:
     #: there by something else. Off for ``claude``, whose inbound behaviour predates
     #: this flag and is left exactly as it was.
     strict_inbound: bool = False
+    #: Top-level keys holding a harness hooks map. Only entries marked portable
+    #: travel, in either direction (``core.portable_hooks``).
+    hook_keys: frozenset = frozenset()
     #: Resolves the local file. ``root`` is a project dir, or None for user-level.
     locate: Callable = local_settings_path
     #: Whether the agent-harness hooks make sense for this file.
@@ -123,13 +126,78 @@ def _claude() -> Domain:
         summary="a coding agent's personal settings.local.json",
         synced_keys=core.SYNCED_KEYS,
         secret_keys=core.SECRET_KEYS,
-        home_subkeys=dict(core.SECRET_SUBKEYS),
+        home_subkeys=dict(core.HOME_SUBKEYS),
         union_arrays=core.UNION_ARRAYS,
         one_way=frozenset({"deny", "ask"}),
         deep=False,
+        # Strict since 0.3.3: a profile is only ever written from redact() output,
+        # so an arriving `statusLine`, `autoMode` or `sshConfigs` was put there by
+        # something else -- and each one is a command, a path or a safety posture.
+        strict_inbound=True,
+        hook_keys=frozenset({"hooks"}),
         locate=local_settings_path,
         hookable=True,
     )
+
+
+#: The hub namespace for USER-level claude settings (``--user``). Separate from
+#: every project's: user rules apply in every repo, project rules in one.
+USER_NAMESPACE = "claude_user"
+
+#: Env override for the project identity, for a checkout whose remote cannot say.
+PROJECT_ENV = "AWSETTINGS_PROJECT"
+
+
+def _normalise_remote(url: str) -> str:
+    """``git@github.com:Org/Repo.git`` and ``https://tok@github.com/org/repo`` -> the
+    same ``github.com/org/repo``. Credentials in a remote URL never reach the id."""
+    u = url.strip()
+    if "://" in u:
+        u = u.split("://", 1)[1]
+        if "@" in u.split("/", 1)[0]:
+            u = u.split("@", 1)[1]
+    elif "@" in u and ":" in u:
+        u = u.split("@", 1)[1].replace(":", "/", 1)
+    u = u.rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u.lower()
+
+
+def project_id(root: Path) -> str:
+    """Which project a settings file belongs to, stable across machines.
+
+    The origin remote when there is one (two clones of one repo on two machines
+    agree), else the directory name. Never the absolute path: that differs per box.
+    """
+    override = (os.environ.get(PROJECT_ENV) or "").strip()
+    if override:
+        return override.lower()
+    import subprocess
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, encoding="utf-8", timeout=5, check=False)
+        remote = (done.stdout or "").strip() if done.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        remote = ""
+    if remote:
+        return _normalise_remote(remote)
+    return "dir:" + Path(root).resolve().name.lower()
+
+
+def claude_namespace(root: Path | None) -> str:
+    """The hub namespace for claude settings at ``root`` (None = user level).
+
+    One per project, so a pull in repo B can never merge repo A's allow rules --
+    before 0.3.3 every scope shared one ``awsettings`` blob, and a pull in any repo
+    merged whatever permissions the last push from any other repo had left there.
+    """
+    if root is None:
+        return USER_NAMESPACE
+    import hashlib
+    digest = hashlib.sha256(project_id(root).encode("utf-8")).hexdigest()[:12]
+    return f"claude_project_{digest}"
 
 
 DESK = Domain(
