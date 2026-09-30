@@ -2,6 +2,7 @@
 
     awsettings status                 what is here, what is remote, what differs
     awsettings pull                   remote -> local (union; never drops a deny)
+    awsettings --domain aitherzero pull --host <old>   rebuild: another host's copy
     awsettings push                   local  -> remote (credentials stripped)
     awsettings hook install           run it automatically from now on
     awsettings hook uninstall
@@ -82,6 +83,13 @@ def _stamp(dom, args=None) -> Path:
     return DEBOUNCE_STAMP.with_name(f"last-push-{dom.name}")
 
 
+def _opaque(args, dom, fn) -> int:
+    """Run one hostfile command for an opaque (one-copy-per-host) domain."""
+    target = dom.locate(_root(args))
+    backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
+    return fn(args, dom, backend, target)
+
+
 def _plugin_trust(backend) -> dict:
     """What core.merge needs to judge arriving plugins: did the blob's seal verify,
     and which marketplaces does this machine's own plugin registry already hold."""
@@ -91,6 +99,9 @@ def _plugin_trust(backend) -> dict:
 
 def cmd_status(args) -> int:
     dom = _dom(args)
+    if dom.opaque:
+        from .hostfile import cmd_status as opaque_status
+        return _opaque(args, dom, opaque_status)
     target = dom.locate(_root(args))
     try:
         backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
@@ -213,6 +224,10 @@ def cmd_enroll(args) -> int:
 
 def cmd_pull(args) -> int:
     dom = _dom(args)
+    if dom.opaque:
+        from .hostfile import cmd_pull as opaque_pull
+        _refresh_trust_if_stale(args)
+        return _opaque(args, dom, opaque_pull)
     target = dom.locate(_root(args))
     backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     _refresh_trust_if_stale(args)
@@ -254,6 +269,13 @@ def cmd_push(args) -> int:
             recent = False      # no stamp yet: nothing to debounce against
         if recent:
             return 0
+    if dom.opaque:
+        from .hostfile import cmd_push as opaque_push
+        rc = _opaque(args, dom, opaque_push)
+        if rc == 0 and not args.dry_run:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(str(time.time()), encoding="utf-8")
+        return rc
     target = dom.locate(_root(args))
     backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     try:
@@ -486,6 +508,9 @@ def _split_path(dotted: str) -> list[str]:
 
 def cmd_get(args) -> int:
     dom = _dom(args)
+    if dom.opaque:
+        from .hostfile import cmd_get as opaque_get
+        return _opaque(args, dom, opaque_get)
     target = dom.locate(_root(args))
     cur = read_json(target)
     if args.path:
@@ -507,6 +532,10 @@ def cmd_set(args) -> int:
     load -- this does not second-guess a schema it does not own.
     """
     dom = _dom(args)
+    if dom.opaque:
+        print(f"REFUSED: the {dom.name!r} file is opaque PowerShell data; edit "
+              f"{dom.locate(_root(args))} itself, then `awsettings --domain {dom.name} push`")
+        return 1
     target = dom.locate(_root(args))
     segs = _split_path(args.path)
     if segs[0] in dom.secret_keys:
@@ -733,6 +762,10 @@ def self_test() -> int:
     if missing_paths({"a": {"b": 1}}, {"a": {"b": 2}}):
         problems.append("missing_paths() flagged a changed VALUE; it judges keys only")
 
+    # --- the aitherzero domain: opaque per-host text, secret scan both ways -
+    from .hostfile import self_test_problems as _hostfile_problems
+    problems.extend(_hostfile_problems())
+
     # --- an unknown domain is refused, never defaulted --------------------
     unknown_refused = False
     try:
@@ -837,6 +870,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("value", help="a JSON value: 0.4, true, \"nova\", null")
     p = sub.add_parser("pull")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--host",
+                   help="aitherzero domain: restore THIS host's copy (default: this "
+                        "machine's name) -- the rebuild-a-new-machine case")
     p.add_argument("--prune-denies", action="store_true",
                    help="allow the profile to REMOVE deny/ask rules (off by default: a "
                         "lost deny costs the thing it prevented)")

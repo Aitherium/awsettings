@@ -7,7 +7,7 @@ machine. A **domain** is the small table that tells the engine how to apply them
 a particular file: where it lives, which keys travel, which stay home, which arrays
 union.
 
-Three domains ship:
+Five domains ship:
 
 * ``claude`` -- the coding agent's ``settings.local.json``. The original behaviour,
   bit for bit; it is the default so nothing that already calls this package moves.
@@ -25,6 +25,12 @@ Three domains ship:
   That is what a new machine needs to pull this owner's memory back and REFUSE a
   bundle sealed by anyone else. A public key is meant to be published; the private
   signing key is a file this domain never names.
+
+* ``aitherzero`` -- AitherZero's gitignored ``config.local.psd1``. Not merged: it is
+  PowerShell data kept as opaque text, one copy PER HOST, so a dead machine's
+  overrides can be pulled onto its replacement with ``pull --host <old-name>``.
+  Nothing named "stays home" here; a credential-shaped line refuses the whole
+  file instead, in both directions (``hostfile.secret_findings``).
 
 WHY A TABLE AND NOT A SUBCLASS. Every field here is data the self-test can assert
 against. A domain that is code can quietly decide a credential is fine to send; a
@@ -84,6 +90,9 @@ class Domain:
     locate: Callable = local_settings_path
     #: Whether the agent-harness hooks make sense for this file.
     hookable: bool = False
+    #: The file is OPAQUE text kept one copy per host (``hostfile.py``), never a
+    #: JSON object merged key by key. No merge, no redact: a secret scan instead.
+    opaque: bool = False
 
 
 def _desk_user_data() -> Path:
@@ -306,8 +315,55 @@ MEMORY = Domain(
 )
 
 
+#: Env override for the AitherZero per-machine overrides file.
+AITHERZERO_FILE_ENV = "AWSETTINGS_AITHERZERO_FILE"
+_AITHERZERO_REL = Path(".PRODUCTS") / ".AITHERZERO" / "config" / "config.local.psd1"
+
+
+def aitherzero_local_path(root: Path | None = None) -> Path:
+    """AitherZero's ``config.local.psd1``: gitignored, so it exists on ONE machine.
+
+    Resolution: ``AWSETTINGS_AITHERZERO_FILE``, then ``$AITHERZERO_ROOT/config`` (the
+    module exports it on import), then the nearest ``.PRODUCTS/.AITHERZERO`` above
+    ``root`` (or the cwd), then the same path under ``root``. The last arm names a file
+    that may not exist yet -- which is exactly the fresh-machine pull.
+    """
+    override = (os.environ.get(AITHERZERO_FILE_ENV) or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    az_root = (os.environ.get("AITHERZERO_ROOT") or "").strip()
+    if az_root and (Path(az_root) / "config").is_dir():
+        return Path(az_root).expanduser().resolve() / "config" / "config.local.psd1"
+    start = Path(root or os.getcwd()).resolve()
+    for d in (start, *start.parents):
+        if (d / _AITHERZERO_REL).parent.is_dir():
+            return d / _AITHERZERO_REL
+    return start / _AITHERZERO_REL
+
+
+AITHERZERO = Domain(
+    name="aitherzero",
+    namespace="awaitherzero",
+    summary="AitherZero's per-machine config.local.psd1, one copy per host "
+            "(opaque text; pull --host <name> rebuilds a new machine)",
+    # The remote object is {"version", "hosts": {<host>: {text, sha256, ...}}}. The
+    # file itself is PowerShell data and is never parsed here: see hostfile.py.
+    synced_keys=frozenset({"version", "hosts"}),
+    secret_keys=frozenset(),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    locate=aitherzero_local_path,
+    hookable=False,
+    opaque=True,
+)
+
+
 def all_domains() -> dict:
-    return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY}
+    return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
+            "aitherzero": AITHERZERO}
 
 
 def get_domain(name: str | None) -> Domain:

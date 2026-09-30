@@ -208,6 +208,15 @@ prefix it pushes under, and per project the latest sealed bundle's digest and th
 refuse a bundle sealed by anyone else. Paths on one machine (bundle root, signing-key
 file) are not synced and are refused on arrival; `projects` merges per project.
 
+`aitherzero` is AitherZero's gitignored `config.local.psd1`, kept as opaque text, one
+copy per host (`status` lists hosts and push times). A credential-shaped line refuses it,
+push and pull; a pull backs the replaced file up under `~/.awsettings/backups/`.
+Rebuilding a dead machine:
+
+1. Fresh machine: clone the repo and sign in.
+2. `pip install awsettings`
+3. `awsettings --domain aitherzero pull --host <old-hostname>`
+
 A merge cannot carry a delete, so un-setting a field everywhere is an explicit
 `null`: `awsettings --domain desk set 'actors."mcp:speak".volume' null`.
 
