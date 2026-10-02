@@ -393,3 +393,17 @@ def test_hook_commands_parse(tmp_path):
     with pytest.raises(SystemExit) as exc:
         cli.main(scope + ["pull", "--quiet"])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("verb", ["push", "pull"])
+def test_hooks_disabled_env_makes_sync_verbs_noops(verb, monkeypatch, capsys):
+    """A probe timing the hooks (adk claude doctor) must never sync settings off-machine."""
+    from awsettings import cli
+
+    def boom(_args):
+        raise AssertionError(f"{verb} ran under AWSETTINGS_HOOKS_DISABLED")
+
+    monkeypatch.setattr(cli, f"cmd_{verb}", boom)
+    monkeypatch.setenv("AWSETTINGS_HOOKS_DISABLED", "1")
+    assert cli.main(["--quiet", verb]) == 0
+    assert capsys.readouterr().out == ""

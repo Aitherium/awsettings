@@ -828,6 +828,15 @@ def _utf8_stdio() -> None:
             continue
 
 
+#: Set by probes that RUN the hook commands (e.g. `adk claude doctor` timing them):
+#: the sync verbs become no-ops, so a measurement never pushes settings off-machine.
+HOOKS_DISABLED_ENV = "AWSETTINGS_HOOKS_DISABLED"
+
+
+def _hooks_disabled() -> bool:
+    return os.environ.get(HOOKS_DISABLED_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdio()
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
@@ -916,6 +925,10 @@ def main(argv: list[str] | None = None) -> int:
         if not hasattr(args, name):
             setattr(args, name, False)
 
+    if args.cmd in ("pull", "push") and _hooks_disabled():
+        # A probe (`adk claude doctor` timing the host's hooks) must not sync
+        # settings off the machine. Silent: this runs inside a hook.
+        return 0
     try:
         if args.cmd == "status":
             return cmd_status(args)
