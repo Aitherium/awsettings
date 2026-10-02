@@ -226,6 +226,12 @@ DESK = Domain(
         # next machine is safe: an r18 ceiling landing on a machine whose gate
         # is shut still shows that machine nothing.
         "content",
+        # `appearance` is which of the family's eleven themes the desk wears, and
+        # its UI scale. Pure preference, no path and no credential in it -- and the
+        # theme ids are validated against the generated list on arrival
+        # (cast-config.cjs validateAppearance), so a profile cannot name a theme
+        # the receiving build does not have.
+        "appearance",
         # `migratedLegacyAt` is deliberately absent: it records that THIS machine
         # folded in its own legacy files. Syncing it would tell a second machine
         # its migration already ran, and it would then never run.
