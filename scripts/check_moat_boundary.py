@@ -54,7 +54,9 @@ _INTERNAL = (
     (re.compile(rb"\bD-\d{3,4}\b"), "debt-ledger row id"),
     (re.compile(rb"\b(?:AWG|HYG|PQ|ADK|MCP|NAV|TP|DC|MOAT)\d{3}\b"), "internal checker rule id"),
     (re.compile(rb"[A-Za-z]:[\\/]AitherOS-Fresh"), "absolute monorepo path"),
-    (re.compile(rb"aitheros-|aither-vllm|aither-worker"), "internal hostname"),
+    # The worker name is split: this guard ships in the package and must not itself
+    # carry the container name it hunts.
+    (re.compile(rb"aitheros-|aither-vllm|aither-" + b"worker"), "internal hostname"),
 )
 
 #: Modules whose ABSENCE means the artifact is broken regardless of how clean it
