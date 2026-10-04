@@ -33,6 +33,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .store import CouldNotRunError
 from .trust import from_wire, is_sealed, to_wire, verify
@@ -372,6 +373,17 @@ def portal_token() -> str | None:
 HOST_ENV_VARS = ("AWSETTINGS_URL", "AITHER_PORTAL_URL", "AITHER_ELYSIUM_URL")
 
 
+def _hub_endpoint(var: str, value: str) -> str:
+    """AITHER_PORTAL_URL / AITHER_ELYSIUM_URL name the portal ORIGIN (adk reads them that
+    way and appends its own path); AWSETTINGS_URL names the settings endpoint itself.
+    Using the bare origin as the endpoint GETs the portal's front page: measured
+    2026-10-04 on a fresh install.ps1 laptop, which sets AITHER_PORTAL_URL for the user,
+    `awsettings pull` answered DEAD (307 -> /workspace/dashboard) on every machine."""
+    if var != "AWSETTINGS_URL" and urlsplit(value).path in ("", "/"):
+        return value.rstrip("/") + urlsplit(DEFAULT_HUB_URL).path
+    return value
+
+
 def resolve_url(url: str | None = None, allow_hub: bool = True) -> str | None:
     """The hosted settings host, or None to use the local file.
 
@@ -383,14 +395,15 @@ def resolve_url(url: str | None = None, allow_hub: bool = True) -> str | None:
     """
     if url:
         return url
+    if not allow_hub:
+        # An explicit profile FILE was named: it beats the host env vars (install.ps1
+        # exports AITHER_PORTAL_URL for every shell), the enrolled config url and the
+        # portal default, or `--profile x` would quietly go to a hub.
+        return None
     for var in HOST_ENV_VARS:
         value = (os.getenv(var) or "").strip()
         if value:
-            return value
-    if not allow_hub:
-        # An explicit profile FILE was named: it beats the enrolled config url as
-        # well as the portal default, or `--profile x` would quietly go to a hub.
-        return None
+            return _hub_endpoint(var, value)
     from . import config
     configured = config.get("AWSETTINGS_URL")
     if configured:

@@ -377,3 +377,30 @@ def test_a_platform_api_key_is_not_a_portal_sign_in(monkeypatch, tmp_path):
     monkeypatch.setenv("AITHERIUM_API_KEY", "aither_sk_live_example")
     assert resolve_url() is None          # stays on the local file
     assert resolve_token() is None
+
+
+def test_a_portal_origin_env_resolves_to_the_settings_endpoint(monkeypatch, tmp_path):
+    """install.ps1/install.sh export AITHER_PORTAL_URL=https://api.aitherium.com (an
+    ORIGIN, the way adk reads it). Used verbatim as the endpoint, `pull` GOT the portal
+    front page and answered DEAD (307) on every freshly installed laptop."""
+    from awsettings.profile import DEFAULT_HUB_URL, resolve_url
+
+    _clear_hub_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AITHER_PORTAL_URL", "https://api.aitherium.com/")
+    assert resolve_url() == DEFAULT_HUB_URL
+    monkeypatch.setenv("AITHER_PORTAL_URL", "https://portal.example/custom/prefs")
+    assert resolve_url() == "https://portal.example/custom/prefs"  # a full endpoint is kept
+    monkeypatch.setenv("AWSETTINGS_URL", "https://settings.example")
+    assert resolve_url() == "https://settings.example"  # AWSETTINGS_URL IS the endpoint
+
+
+def test_an_explicit_profile_file_beats_the_host_env(monkeypatch, tmp_path):
+    """`--profile x` names a FILE. With AITHER_PORTAL_URL exported by the installer for
+    every shell, the env check ran first and sent that profile to the hub."""
+    from awsettings.profile import resolve_url
+
+    _clear_hub_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("AITHER_PORTAL_URL", "https://api.aitherium.com")
+    monkeypatch.setenv("AWSETTINGS_URL", "https://settings.example")
+    assert resolve_url(allow_hub=False) is None
+    assert resolve_url("https://explicit.example", allow_hub=False) == "https://explicit.example"
