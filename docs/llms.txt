@@ -1,0 +1,41 @@
+# awsettings
+
+> Your agent's permissions and config, following you to the next machine.
+
+An agent harness keeps its permission allowlist, enabled tool servers and hooks in a local file. Work from a second machine -- a laptop, a shell session, a dev container a phone just opened -- and none of it is there. You re-approve the same action, by hand, once per surface, forever, and the copies drift apart while every one of them looks correct.
+
+## Install
+
+```
+pip install awsettings
+```
+
+## In Claude Code
+
+- setting: `awsettings preset apply aitherium-claude`
+
+## Use it in 30 seconds
+
+Point it at your agent's settings on one machine and have them show up on the next one you open.
+
+## Composes with
+
+- [awdk](https://aitherium.github.io/awdk/) — Build AI agent fleets — 3 lines, any backend, local or cloud.
+- [awsh](https://aitherium.github.io/awsh/) — Your terminal answers you -- type a question where a command would go.
+- [awnix](https://aitherium.github.io/awnix/) — A Linux you can hand to an agent — immutable base, capabilities included.
+- [awiam](https://aitherium.github.io/awiam/) — Who is this caller? A directory and session store that fails honestly.
+- [awm](https://aitherium.github.io/awm/) — A portable, scoped agent memory.
+- [awseal](https://aitherium.github.io/awseal/) — Sign an artifact so a stranger can verify it.
+- [awshare](https://aitherium.github.io/awshare/) — Publish an artifact and fetch it back verified.
+- [awresume](https://aitherium.github.io/awresume/) — The coding sessions you had open, reopened after the reboot.
+- [awdesk](https://aitherium.github.io/awdesk/) — Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awsettings
+- Docs: https://aitherium.github.io/awsettings/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awsettings/aither-manifest.json
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awsettings.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
