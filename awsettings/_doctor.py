@@ -23,7 +23,15 @@ import sys
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 SELF = 'awsettings'
-FAMILY = ['awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide', 'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awshare', 'awsprite', 'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet']
+FAMILY = [
+    'awask', 'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awclassify', 'awdecide',
+    'awdeck', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow', 'awfocus', 'awgit',
+    'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet',
+    'awplay', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse',
+    'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter', 'awrtifact',
+    'awrun', 'awscope', 'awscreen', 'awseal', 'awshare', 'awsprite', 'awstorage', 'awsuite',
+    'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet',
+]
 PAIRS_WITH = ['adk', 'awiam', 'awm', 'awseal', 'awshare']
 
 #: This brick's OWN config, read out of its source at generation time.
@@ -33,7 +41,13 @@ PAIRS_WITH = ['adk', 'awiam', 'awm', 'awseal', 'awshare']
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
 ENV_REQUIRED = []
-ENV_OPTIONAL = ['AWSETTINGS_BACKEND_PROFILES', 'AWSETTINGS_DOMAIN', 'AWSETTINGS_ENVELOPE', 'AWSETTINGS_HOME', 'AWSETTINGS_KEYS_URL', 'AWSETTINGS_LAUNCHER_BIN', 'AWSETTINGS_LOCAL', 'AWSETTINGS_MEMORY_FILE', 'AWSETTINGS_MODS_FILE', 'AWSETTINGS_PROBE_TOKEN', 'AWSETTINGS_PROFILE', 'AWSETTINGS_PUBLIC_KEY', 'AWSETTINGS_SECRET_CMD', 'AWSETTINGS_TOKEN', 'AWSETTINGS_TOKEN_COMMAND', 'AWSETTINGS_TOKEN_FILE', 'AWSETTINGS_URL']
+ENV_OPTIONAL = [
+    'AWSETTINGS_BACKEND_PROFILES', 'AWSETTINGS_DOMAIN', 'AWSETTINGS_ENVELOPE', 'AWSETTINGS_HOME',
+    'AWSETTINGS_KEYS_URL', 'AWSETTINGS_LAUNCHER_BIN', 'AWSETTINGS_LOCAL', 'AWSETTINGS_MEMORY_FILE',
+    'AWSETTINGS_MODS_FILE', 'AWSETTINGS_PROBE_TOKEN', 'AWSETTINGS_PROFILE', 'AWSETTINGS_PUBLIC_KEY',
+    'AWSETTINGS_SECRET_CMD', 'AWSETTINGS_TOKEN', 'AWSETTINGS_TOKEN_COMMAND',
+    'AWSETTINGS_TOKEN_FILE', 'AWSETTINGS_URL',
+]
 
 
 def _installed(mod: str) -> "str | None":
