@@ -407,3 +407,19 @@ def test_hooks_disabled_env_makes_sync_verbs_noops(verb, monkeypatch, capsys):
     monkeypatch.setenv("AWSETTINGS_HOOKS_DISABLED", "1")
     assert cli.main(["--quiet", verb]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_disabled_mcp_servers_never_travel_and_never_arrive():
+    """A disable is one machine's choice. As a synced union it could never be undone:
+    'aitheros' sat disabled 10-03..10-10 because every pull re-added it."""
+    from awsettings.core import merge, redact
+    local = {"enabledMcpjsonServers": ["aitheros"], "disabledMcpjsonServers": []}
+    assert "disabledMcpjsonServers" not in redact(
+        {"disabledMcpjsonServers": ["aitheros"]})
+    remote = {"disabledMcpjsonServers": ["aitheros"], "enabledMcpjsonServers": ["x"]}
+    out = merge(local, remote)
+    assert out.get("disabledMcpjsonServers") == []
+    assert set(out["enabledMcpjsonServers"]) == {"aitheros", "x"}
+    # A local disable survives a pull untouched.
+    out2 = merge({"disabledMcpjsonServers": ["noisy"]}, {})
+    assert out2["disabledMcpjsonServers"] == ["noisy"]

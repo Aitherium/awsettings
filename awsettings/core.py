@@ -35,7 +35,6 @@ UNION_ARRAYS: tuple[tuple[str, ...], ...] = (
     ("permissions", "ask"),
     ("permissions", "additionalDirectories"),
     ("enabledMcpjsonServers",),
-    ("disabledMcpjsonServers",),
 )
 
 #: Keys whose VALUES are credentials, or commands that fetch one. Dropped whole
@@ -77,6 +76,11 @@ HOME_KEYS = frozenset({
     "sshConfigs",
     "remote",
     "voice",
+    # A disable is one machine's decision, and as a synced UNION array it could
+    # never be undone: removing a name locally was re-added by the next pull from any
+    # other machine. Measured 2026-10-10: 'aitheros' sat in disabledMcpjsonServers
+    # from 10-03 to 10-10 and every Claude session in the repo had no fleet tools.
+    "disabledMcpjsonServers",
 })
 
 #: A hook entry travels only when it says so. Hooks are commands, very often with an
@@ -97,7 +101,6 @@ SYNCED_KEYS = frozenset({
     # asserted the strip, not by reading it.
     "sandbox",
     "enabledMcpjsonServers",
-    "disabledMcpjsonServers",
     "enableAllProjectMcpServers",
     # Only PORTABLE entries -- see portable_hooks().
     "hooks",
