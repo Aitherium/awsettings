@@ -7,7 +7,7 @@ machine. A **domain** is the small table that tells the engine how to apply them
 a particular file: where it lives, which keys travel, which stay home, which arrays
 union.
 
-Five domains ship:
+Six domains ship:
 
 * ``claude`` -- the coding agent's ``settings.local.json``. The original behaviour,
   bit for bit; it is the default so nothing that already calls this package moves.
@@ -25,6 +25,13 @@ Five domains ship:
   That is what a new machine needs to pull this owner's memory back and REFUSE a
   bundle sealed by anyone else. A public key is meant to be published; the private
   signing key is a file this domain never names.
+
+* ``companions`` -- ``~/.aither/companions.json``: which imported companions this
+  owner has brought into awdesk's roster -- persona_id, display name, source format
+  and roster folder name per companion, nothing else. Union on pull, never a
+  delete. Persona text and memories never travel here (they go through the
+  encrypted companion backup); the record filter refuses them in both directions,
+  and the machine-local roster path stays home.
 
 * ``aitherzero`` -- AitherZero's gitignored ``config.local.psd1``. Not merged: it is
   PowerShell data kept as opaque text, one copy PER HOST, so a dead machine's
@@ -45,6 +52,7 @@ guarantee in BOTH directions: never sent, and never accepted on arrival.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,6 +101,18 @@ class Domain:
     #: The file is OPAQUE text kept one copy per host (``hostfile.py``), never a
     #: JSON object merged key by key. No merge, no redact: a secret scan instead.
     opaque: bool = False
+    #: ``{top_level_key: {field: pattern_or_None}}`` -- the key holds a map of
+    #: RECORDS (``{id: {field: str}}``) and only these string fields of a record
+    #: travel, in both directions; a field with a pattern must fullmatch it. A
+    #: record id must be a safe token (no path separators), a record that is not an
+    #: object is dropped, and so is any field not named here (``core.filter_records``).
+    #: This is how ``companions`` guarantees persona text never rides a profile even
+    #: when a peer puts it there.
+    record_fields: dict = field(default_factory=dict)
+    #: Rebuilds the local file from the source it mirrors, right before a push
+    #: (``companions``: a scan of the roster dir). Writes only the LOCAL file; what
+    #: leaves still goes through ``redact``. Never deletes a record.
+    refresh: Callable | None = None
 
 
 def _desk_user_data() -> Path:
@@ -367,9 +387,108 @@ AITHERZERO = Domain(
 )
 
 
+#: Env override for the companions index (the importer honours it too).
+COMPANIONS_FILE_ENV = "AWSETTINGS_COMPANIONS_FILE"
+_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: The fields of one companion record that may travel. Nothing else, ever. The
+#: folder is a roster folder NAME, so it is held to the persona-id shape too.
+COMPANION_FIELDS = {"persona_id": _RECORD_ID, "display_name": None,
+                    "source_format": None, "folder": _RECORD_ID}
+
+
+def companions_index_path(root: Path | None = None) -> Path:
+    """The companions index. ``root`` is ignored: it is per USER.
+
+    Written by ``python -m lib.companion.character_cards <card> --roster`` and by
+    the pre-push roster scan below; ``AWSETTINGS_COMPANIONS_FILE`` overrides it.
+    """
+    override = (os.environ.get(COMPANIONS_FILE_ENV) or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "companions.json"
+
+
+def scan_roster_companions(roster_dir: Path) -> dict:
+    """``{persona_id: record}`` for every roster folder an imported companion owns:
+    a ``character.json`` carrying the ``companion`` object and a valid persona_id.
+    Only the travelling fields are read; persona text is never opened."""
+    import json
+    found: dict = {}
+    try:
+        entries = sorted(p for p in Path(roster_dir).iterdir() if p.is_dir())
+    except OSError:
+        return found
+    for folder in entries:
+        try:
+            cj = json.loads((folder / "character.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(cj, dict) or not isinstance(cj.get("companion"), dict):
+            continue
+        pid = cj.get("persona_id")
+        if not isinstance(pid, str) or not _RECORD_ID.match(pid):
+            continue
+        found[pid] = {
+            "persona_id": pid,
+            "display_name": str(cj.get("display_name") or pid)[:128],
+            "source_format": str(cj["companion"].get("source_format") or "")[:40],
+            "folder": folder.name,
+        }
+    return found
+
+
+def refresh_companions(target: Path) -> bool:
+    """Union the roster scan into the index at ``target``. True when it changed.
+
+    The roster dir is ``DESK_ROSTER_DIR`` (the desk honours it) or the index's own
+    stay-home ``roster_dir``. No roster known = nothing to add, and the file is
+    left exactly as it was. Records already in the index are never removed.
+    """
+    from .store import read_json, write_json
+    data = read_json(Path(target))
+    roster = (os.environ.get("DESK_ROSTER_DIR") or "").strip() or data.get("roster_dir")
+    if not isinstance(roster, str) or not roster.strip():
+        return False
+    current = data.get("companions") if isinstance(data.get("companions"), dict) else {}
+    merged = dict(current)
+    for pid, rec in scan_roster_companions(Path(roster).expanduser()).items():
+        prior = current.get(pid) if isinstance(current.get(pid), dict) else {}
+        merged[pid] = {**prior, **rec}
+    updated = {**data, "version": data.get("version", 1), "companions": merged}
+    if updated == data:
+        return False
+    write_json(Path(target), updated)
+    return True
+
+
+COMPANIONS = Domain(
+    name="companions",
+    namespace="awcompanions",
+    summary="which imported companions joined awdesk's roster: persona_id, display "
+            "name, source format, folder -- metadata only, union, never a delete",
+    # `roster_dir` is deliberately absent: a PATH on one machine. strict_inbound
+    # refuses one arriving, so a profile cannot re-point a machine's scan.
+    synced_keys=frozenset({"version", "companions"}),
+    # Never in this file, named anyway: if one ever appears it stays home.
+    secret_keys=frozenset({"persona", "persona_text", "instruction", "memories",
+                           "memory", "history", "messages"}),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    # Keyed by persona_id: two machines that each imported a different companion
+    # merge per companion, and a pull can only ADD one (a merge carries no delete).
+    deep=True,
+    strict_inbound=True,
+    locate=companions_index_path,
+    hookable=False,
+    record_fields={"companions": COMPANION_FIELDS},
+    refresh=refresh_companions,
+)
+
+
 def all_domains() -> dict:
     return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
-            "aitherzero": AITHERZERO}
+            "companions": COMPANIONS, "aitherzero": AITHERZERO}
 
 
 def get_domain(name: str | None) -> Domain:

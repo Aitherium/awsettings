@@ -279,6 +279,10 @@ def cmd_push(args) -> int:
     target = dom.locate(_root(args))
     backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     try:
+        if dom.refresh is not None and not args.dry_run:
+            # The file mirrors a source (companions: the roster dir); catch it up
+            # first so a push sends what is actually there. Local write only.
+            dom.refresh(target)
         local = read_json(target)
     except CouldNotRunError as exc:
         if not args.quiet:
@@ -557,7 +561,7 @@ def cmd_set(args) -> int:
             cur[seg] = nxt
         cur = nxt
     cur[segs[-1]] = value
-    if dom.name in ("desk", "mods", "memory") and "version" not in data:
+    if dom.name in ("desk", "mods", "memory", "companions") and "version" not in data:
         data["version"] = 1
     if before == data:
         if not args.quiet:
@@ -754,6 +758,24 @@ def self_test() -> int:
         problems.append("memory: one machine's projects map replaced the other's")
     if "private_key" in both:
         problems.append("memory: a credential-named key arrived and was written")
+
+    # --- the companions domain: metadata only, union, nothing else rides --
+    comp = get_domain("companions")
+    here = {"version": 1, "roster_dir": "C:/x",
+            "companions": {"mira": {"persona_id": "mira", "display_name": "Mira",
+                                    "source_format": "card-v2", "folder": "mira",
+                                    "persona": "You are Mira."}}}
+    sent = redact(here, domain=comp)
+    if "roster_dir" in sent or "persona" in sent.get("companions", {}).get("mira", {}):
+        problems.append("companions: a local path or persona text left the machine")
+    there = {"version": 1, "companions": {
+        "kai": {"persona_id": "kai", "folder": "../../evil", "memories": "x"},
+        "mira": None}}
+    both = merge(here, there, domain=comp)
+    if set(both.get("companions", {})) != {"mira", "kai"}:
+        problems.append("companions: a pull deleted or failed to add a companion")
+    if set(both["companions"].get("kai", {})) != {"persona_id"}:
+        problems.append("companions: persona text, memories or a path-shaped folder arrived")
 
     # --- a server that drops a key is caught, by path ---------------------
     if missing_paths({"authors": {"token-service": {"volume": 1}}, "voice": {"volume": 1}},

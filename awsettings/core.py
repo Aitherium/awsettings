@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any
 
 #: Array-valued keys that MERGE as a union rather than replacing (rule 2).
@@ -245,6 +246,35 @@ def _union_hooks(local: Any, arriving: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: A record id inside a ``record_fields`` map: a safe token, never a path.
+_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: Longest string a record field may carry. Metadata, not a document.
+RECORD_FIELD_MAX = 256
+
+
+def filter_records(value: Any, fields: dict[str, Any]) -> dict[str, Any]:
+    """Only the named string fields of each record in ``value``; see
+    ``Domain.record_fields``. Applied on the way out AND on arrival, because a
+    filter that runs in one direction is the half-guarantee ``merge`` documents."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for rid, rec in value.items():
+        if not isinstance(rid, str) or not _RECORD_ID.match(rid) or not isinstance(rec, dict):
+            continue
+        kept = {}
+        for name, pattern in fields.items():
+            v = rec.get(name)
+            if not isinstance(v, str) or len(v) > RECORD_FIELD_MAX:
+                continue
+            if pattern is not None and not pattern.fullmatch(v):
+                continue
+            kept[name] = v
+        if kept:
+            out[rid] = kept
+    return out
+
+
 def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
     """The snapshot that may leave this machine. Never mutates the input."""
     dom = _domain(domain)
@@ -254,6 +284,8 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
             continue
         if k in dom.home_subkeys and isinstance(v, dict):
             v = {sk: sv for sk, sv in v.items() if sk not in dom.home_subkeys[k]}
+        if k in dom.record_fields:
+            v = filter_records(v, dom.record_fields[k])
         if k in dom.hook_keys:
             v = portable_hooks(v)
             if not v:
@@ -341,6 +373,13 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
             continue
         if k in dom.home_subkeys and isinstance(v, dict):
             v = {sk: sv for sk, sv in v.items() if sk not in dom.home_subkeys[k]}
+        if k in dom.record_fields:
+            # Refused on arrival exactly as on the way out: a field the table does
+            # not name (persona text, memories) never lands, and a merge of
+            # records can only add or update one, never delete it.
+            v = filter_records(v, dom.record_fields[k])
+            if not v:
+                continue
         if k in dom.hook_keys:
             # Refused on arrival exactly as on the way out: an unmarked hook in a
             # profile is a command somebody else chose for this machine.
