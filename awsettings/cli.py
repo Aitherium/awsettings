@@ -4,6 +4,8 @@
     awsettings pull                   remote -> local (union; never drops a deny)
     awsettings --domain aitherzero pull --host <old>   rebuild: another host's copy
     awsettings push                   local  -> remote (credentials stripped)
+    awsettings --domain companions pull [--restore-memories]
+                                      recreate missing companions (+ their memories)
     awsettings hook install           run it automatically from now on
     awsettings hook uninstall
     awsettings backends               which model backends this box can launch
@@ -245,17 +247,20 @@ def cmd_pull(args) -> int:
     if not lines:
         if not args.quiet:
             print("already in step")
-        return 0
-    if args.dry_run:
+    elif args.dry_run:
         print(f"would apply {len(lines)} change(s) to {target}:")
         for ln in lines:
             print("  " + ln)
-        return 0
-    write_json(target, merged)
-    if not args.quiet:
-        print(f"applied {len(lines)} change(s) to {target}:")
-        for ln in lines:
-            print("  " + ln)
+    else:
+        write_json(target, merged)
+        if not args.quiet:
+            print(f"applied {len(lines)} change(s) to {target}:")
+            for ln in lines:
+                print("  " + ln)
+    # Runs even when the file was already in step: a machine that pulled the
+    # index before its roster existed still needs the folders it describes.
+    if dom.after_pull is not None:
+        return dom.after_pull(merged, args)
     return 0
 
 
@@ -278,12 +283,21 @@ def cmd_push(args) -> int:
         return rc
     target = dom.locate(_root(args))
     backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
+    scan_note: list[str] = []
     try:
         if dom.refresh is not None and not args.dry_run:
             # The file mirrors a source (companions: the roster dir); catch it up
             # first so a push sends what is actually there. Local write only.
             dom.refresh(target)
-        local = read_json(target)
+            local = read_json(target)
+        elif dom.refresh_preview is not None and args.dry_run:
+            # Same scan, nothing written: the dry run shows what WOULD travel.
+            before = read_json(target)
+            local = dom.refresh_preview(target)
+            if local != before:
+                scan_note = diff_summary(before, local, domain=dom)
+        else:
+            local = read_json(target)
     except CouldNotRunError as exc:
         if not args.quiet:
             print(f"DEAD: {exc}")
@@ -300,6 +314,12 @@ def cmd_push(args) -> int:
             print(f"REFUSED: {exc}")
             return 1
     if args.dry_run:
+        if scan_note:
+            # stderr: stdout stays the exact JSON that would travel.
+            print(f"the pre-push roster scan would update {target} "
+                  f"({len(scan_note)} change(s)):", file=sys.stderr)
+            for ln in scan_note:
+                print("  " + ln, file=sys.stderr)
         print(json.dumps(snapshot, indent=2))
         return 0
     try:
@@ -907,6 +927,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prune-denies", action="store_true",
                    help="allow the profile to REMOVE deny/ask rules (off by default: a "
                         "lost deny costs the thing it prevented)")
+    p.add_argument("--restore-memories", action="store_true",
+                   help="companions domain: also restore each backed-up companion's "
+                        "memories (passphrase from $AWRTIFACT_COMPANION_PASSPHRASE)")
+    p.add_argument("--trust-repo", action="append", default=[], metavar="OWNER/NAME",
+                   help="companions domain: a backup repo --restore-memories may fetch "
+                        "from (repeatable; also $AWSETTINGS_TRUSTED_BACKUP_REPOS). A repo "
+                        "named only by the synced index is never fetched automatically.")
     p = sub.add_parser("push")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debounce", action="store_true")
@@ -943,7 +970,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
-    for name in ("dry_run", "prune_denies", "debounce", "json", "probe", "no_cache"):
+    for name in ("dry_run", "prune_denies", "debounce", "json", "probe", "no_cache",
+                 "restore_memories"):
         if not hasattr(args, name):
             setattr(args, name, False)
 

@@ -28,8 +28,10 @@ Six domains ship:
 
 * ``companions`` -- ``~/.aither/companions.json``: which imported companions this
   owner has brought into awdesk's roster -- persona_id, display name, source format
-  and roster folder name per companion, nothing else. Union on pull, never a
-  delete. Persona text and memories never travel here (they go through the
+  and roster folder name per companion, plus where its encrypted memory backup
+  lives (repo + last tag, never the passphrase). Union on pull, never a delete; a
+  pull recreates each missing roster folder bodiless and says how to restore its
+  memories. Persona text and memories never travel here (they go through the
   encrypted companion backup); the record filter refuses them in both directions,
   and the machine-local roster path stays home.
 
@@ -113,6 +115,13 @@ class Domain:
     #: (``companions``: a scan of the roster dir). Writes only the LOCAL file; what
     #: leaves still goes through ``redact``. Never deletes a record.
     refresh: Callable | None = None
+    #: What ``refresh`` WOULD leave in the local file, computed without writing it
+    #: -- so ``push --dry-run`` shows what would travel after the scan.
+    refresh_preview: Callable | None = None
+    #: Runs after a pull merged the index: ``after_pull(merged, args) -> exit code``
+    #: (``companions``: recreate missing roster folders, say how to get memories
+    #: back). ``args.dry_run`` means report, write nothing.
+    after_pull: Callable | None = None
 
 
 def _desk_user_data() -> Path:
@@ -392,8 +401,15 @@ COMPANIONS_FILE_ENV = "AWSETTINGS_COMPANIONS_FILE"
 _RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 #: The fields of one companion record that may travel. Nothing else, ever. The
 #: folder is a roster folder NAME, so it is held to the persona-id shape too.
+#: ``backup_repo``/``last_backup_tag`` say WHERE the encrypted memories live (written
+#: by ``awrtifact companion-backup``) so a wiped machine can get them back. The
+#: passphrase is never a field: it is not in this file on any machine. Both are
+#: held to a strict shape because a pull prints them inside a command line.
 COMPANION_FIELDS = {"persona_id": _RECORD_ID, "display_name": None,
-                    "source_format": None, "folder": _RECORD_ID}
+                    "source_format": None, "folder": _RECORD_ID,
+                    "backup_repo": re.compile(
+                        r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$"),
+                    "last_backup_tag": re.compile(r"^companion-[A-Za-z0-9._-]{1,200}$")}
 
 
 def companions_index_path(root: Path | None = None) -> Path:
@@ -437,28 +453,49 @@ def scan_roster_companions(roster_dir: Path) -> dict:
     return found
 
 
-def refresh_companions(target: Path) -> bool:
-    """Union the roster scan into the index at ``target``. True when it changed.
-
-    The roster dir is ``DESK_ROSTER_DIR`` (the desk honours it) or the index's own
-    stay-home ``roster_dir``. No roster known = nothing to add, and the file is
-    left exactly as it was. Records already in the index are never removed.
-    """
-    from .store import read_json, write_json
-    data = read_json(Path(target))
+def _roster_of(data: dict) -> str:
+    """The roster dir: ``DESK_ROSTER_DIR`` (the desk honours it) or the index's own
+    stay-home ``roster_dir``. Empty when neither is known."""
     roster = (os.environ.get("DESK_ROSTER_DIR") or "").strip() or data.get("roster_dir")
-    if not isinstance(roster, str) or not roster.strip():
-        return False
+    return roster.strip() if isinstance(roster, str) else ""
+
+
+def preview_companions(target: Path) -> dict:
+    """The index at ``target`` with the roster scan unioned in. Writes nothing.
+
+    No roster known = the file as it is. Records already in the index are never
+    removed, and fields the scan does not own (where the backup lives) are kept.
+    """
+    from .store import read_json
+    data = read_json(Path(target))
+    roster = _roster_of(data)
+    if not roster:
+        return data
     current = data.get("companions") if isinstance(data.get("companions"), dict) else {}
     merged = dict(current)
     for pid, rec in scan_roster_companions(Path(roster).expanduser()).items():
         prior = current.get(pid) if isinstance(current.get(pid), dict) else {}
         merged[pid] = {**prior, **rec}
-    updated = {**data, "version": data.get("version", 1), "companions": merged}
+    return {**data, "version": data.get("version", 1), "companions": merged}
+
+
+def refresh_companions(target: Path) -> bool:
+    """Union the roster scan into the index at ``target``. True when it changed."""
+    from .store import read_json, write_json
+    data = read_json(Path(target))
+    updated = preview_companions(target)
     if updated == data:
         return False
     write_json(Path(target), updated)
     return True
+
+
+def _companions_after_pull(merged: dict, args) -> int:
+    from .companions_home import reconcile
+    return reconcile(merged, dry_run=bool(getattr(args, "dry_run", False)),
+                     restore_memories=bool(getattr(args, "restore_memories", False)),
+                     quiet=bool(getattr(args, "quiet", False)),
+                     trusted=getattr(args, "trust_repo", None))
 
 
 COMPANIONS = Domain(
@@ -483,6 +520,8 @@ COMPANIONS = Domain(
     hookable=False,
     record_fields={"companions": COMPANION_FIELDS},
     refresh=refresh_companions,
+    refresh_preview=preview_companions,
+    after_pull=_companions_after_pull,
 )
 
 
