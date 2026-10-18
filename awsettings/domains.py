@@ -311,7 +311,8 @@ MODS = Domain(
     # voice endpoint: never sent, never accepted on arrival.
     home_subkeys={"aw": frozenset({"daemon"}),
                   "freellmapi": frozenset({"api_key", "unified_key", "key", "token",
-                                           "encryption_key", "password"})},
+                                           "encryption_key", "password",
+                                           "allow_remote"})},
     union_arrays=(),
     one_way=frozenset(),
     deep=True,

@@ -80,3 +80,12 @@ def test_freellmapi_route_settings_travel_and_its_credentials_never_do(mods):
                                              "unified_key": "freellmapi-from-elsewhere"}}
     both = merge({"version": 1, "freellmapi": {"enabled": True}}, arriving, domain=MODS)
     assert both["freellmapi"] == {"enabled": True, "url": "http://127.0.0.1:31415"}
+
+
+def test_freellmapi_allow_remote_never_travels():
+    """Where THIS machine sends its unified key is decided on this machine only."""
+    here = {"version": 1, "freellmapi": {"enabled": True, "allow_remote": True}}
+    assert "allow_remote" not in redact(here, domain=MODS)["freellmapi"]
+    both = merge({"version": 1, "freellmapi": {"enabled": True}},
+                 {"version": 1, "freellmapi": {"allow_remote": True}}, domain=MODS)
+    assert "allow_remote" not in both["freellmapi"]
