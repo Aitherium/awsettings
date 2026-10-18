@@ -560,9 +560,41 @@ COMPANIONS = Domain(
 )
 
 
+def worktrees_path(root: Path | None = None) -> Path:
+    """awgit's worktree-lifecycle settings. ``root`` is ignored: it is per USER.
+    ``AWGIT_WT_SETTINGS`` is the same override awgit itself reads."""
+    override = (os.environ.get("AWGIT_WT_SETTINGS") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "awgit" / "worktrees.json"
+
+
+WORKTREES = Domain(
+    name="worktrees",
+    namespace="awworktrees",
+    summary="awgit's worktree lifecycle: idle thresholds, per-drive free-space floor, "
+            "snapshot cap -- how long an agent checkout lives before it is retired",
+    # Deliberately absent: `roots` (PATHS on one machine) and `record_commands`
+    # (COMMANDS). strict_inbound refuses either arriving, so a profile can neither
+    # re-point a machine's reaper nor make it run something.
+    synced_keys=frozenset({"idle_hours", "pressure_idle_hours", "pressure_free_gb",
+                           "unregistered_grace_hours", "snapshot_max_mb",
+                           "repo_free_floor_gb"}),
+    secret_keys=frozenset(),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=False,
+    strict_inbound=True,
+    locate=worktrees_path,
+    hookable=False,
+)
+
+
 def all_domains() -> dict:
     return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
-            "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER}
+            "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER,
+            "worktrees": WORKTREES}
 
 
 def get_domain(name: str | None) -> Domain:
