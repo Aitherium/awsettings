@@ -63,3 +63,20 @@ def test_a_malformed_mods_file_is_never_overwritten_by_set(mods):
     mods.write_text("{ not json", encoding="utf-8")
     assert cli.main(["--domain", "mods", "set", "aw.harness", "aider"]) != 0
     assert mods.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_freellmapi_route_settings_travel_and_its_credentials_never_do(mods):
+    """awdk's free-cloud route: enabled/url/models follow the user; keys stay home."""
+    assert cli.main(["--domain", "mods", "set", "freellmapi.enabled", "true"]) == 0
+    assert cli.main(["--domain", "mods", "set", "freellmapi.preferred_models",
+                     '["gemini-2.5-flash"]']) == 0
+    here = json.loads(mods.read_text(encoding="utf-8"))
+    assert here["freellmapi"] == {"enabled": True, "preferred_models": ["gemini-2.5-flash"]}
+    here["freellmapi"]["api_key"] = "freellmapi-local-only"
+    sent = redact(here, domain=MODS)
+    assert sent["freellmapi"]["enabled"] is True
+    assert "api_key" not in sent["freellmapi"]
+    arriving = {"version": 1, "freellmapi": {"url": "http://127.0.0.1:31415",
+                                             "unified_key": "freellmapi-from-elsewhere"}}
+    both = merge({"version": 1, "freellmapi": {"enabled": True}}, arriving, domain=MODS)
+    assert both["freellmapi"] == {"enabled": True, "url": "http://127.0.0.1:31415"}

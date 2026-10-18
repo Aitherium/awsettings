@@ -300,11 +300,18 @@ MODS = Domain(
     namespace="awmods",
     summary="a coding agent's mods.json: the default harness, backend and model "
             "its `aw` subagent runs on",
-    synced_keys=frozenset({"version", "aw"}),
+    # `freellmapi` is awdk's non-local route (enabled / url / preferred_models):
+    # the user's own FreeLLMAPI proxy, turned on once and followed to every
+    # machine. Its credentials never ride here -- provider keys live in the
+    # proxy's own encrypted store and the unified key in a local key file -- and
+    # any credential-shaped field put there anyway stays home in both directions.
+    synced_keys=frozenset({"version", "aw", "freellmapi"}),
     secret_keys=frozenset(),
     # Where the harness daemon listens is one machine's topology, exactly like a
     # voice endpoint: never sent, never accepted on arrival.
-    home_subkeys={"aw": frozenset({"daemon"})},
+    home_subkeys={"aw": frozenset({"daemon"}),
+                  "freellmapi": frozenset({"api_key", "unified_key", "key", "token",
+                                           "encryption_key", "password"})},
     union_arrays=(),
     one_way=frozenset(),
     deep=True,
