@@ -314,6 +314,41 @@ MODS = Domain(
 )
 
 
+def darkmatter_brain_path(root: Path | None = None) -> Path:
+    """Darkmatter's brain file: which model each AI role uses. ``root`` is ignored: it is per USER.
+
+    The game reads the same path (``DM_BRAIN_FILE`` overrides it there, ``AWSETTINGS_DARKMATTER_FILE`` here),
+    so a test or a second install can point both at one file.
+    """
+    for var in ("AWSETTINGS_DARKMATTER_FILE", "DM_BRAIN_FILE"):
+        override = (os.environ.get(var) or "").strip()
+        if override:
+            return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "darkmatter" / "brain.json"
+
+
+DARKMATTER = Domain(
+    name="darkmatter",
+    namespace="awdarkmatter",
+    summary="Darkmatter's brain.json: which model each AI role uses (the orchestrator brain, its "
+            "perception and reasoning tools) and the tools' time budgets",
+    # `roles` names MODELS, never hosts: {"gm": {"model": "aither-orchestrator"}, "perception": {...}}.
+    # `brain` is the tool budgets (soft budget, perceive / deliberate deadlines) -- preferences, no paths.
+    synced_keys=frozenset({"version", "roles", "brain"}),
+    secret_keys=frozenset(),
+    # `endpoint` is deliberately absent from synced_keys: it holds ONE machine's scheduler URL and CA-file
+    # path. With strict_inbound an arriving `endpoint` is refused too, so a profile can never re-point a
+    # machine's game -- and every prompt it sends -- at a server of the profile's choosing.
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    locate=darkmatter_brain_path,
+    hookable=False,
+)
+
+
 def memory_config_path(root: Path | None = None) -> Path:
     """The memory lander's config. ``root`` is ignored: it is per USER.
 
@@ -527,7 +562,7 @@ COMPANIONS = Domain(
 
 def all_domains() -> dict:
     return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
-            "companions": COMPANIONS, "aitherzero": AITHERZERO}
+            "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER}
 
 
 def get_domain(name: str | None) -> Domain:
