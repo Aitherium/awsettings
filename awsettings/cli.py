@@ -23,6 +23,7 @@ the same green run otherwise, and telling them apart is the whole point.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -85,6 +86,24 @@ def _stamp(dom, args=None) -> Path:
             return DEBOUNCE_STAMP.with_name("last-push-user")
         return DEBOUNCE_STAMP
     return DEBOUNCE_STAMP.with_name(f"last-push-{dom.name}")
+
+
+# A hook push whose content matches the last successful push is skipped, unless that
+# push is older than this (so a hub that lost the blob is still healed hourly).
+UNCHANGED_RESEND_SECONDS = 3600
+
+
+def _content_stamp(stamp: Path) -> Path:
+    return stamp.with_name(stamp.name + ".sha256")
+
+
+def _unchanged_since_last_push(stamp: Path, digest: str) -> bool:
+    marker = _content_stamp(stamp)
+    try:
+        fresh = time.time() - marker.stat().st_mtime < UNCHANGED_RESEND_SECONDS
+        return fresh and marker.read_text(encoding="utf-8").strip() == digest
+    except OSError:
+        return False
 
 
 def _opaque(args, dom, fn) -> int:
@@ -305,6 +324,14 @@ def cmd_push(args) -> int:
             print(f"DEAD: {exc}")
         return 2
     snapshot = redact(local, domain=dom)
+    # The PostToolUse hook pushes after EVERY tool call in every session; the 5 s
+    # debounce only rate-limits that. Re-sending identical settings rewrote the
+    # owner's directory entry (a 150 KB attribute) every few seconds on 2026-10-19,
+    # ~150 MB/day of changelog, and the hub's directory service crash-looped under it.
+    digest = hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    if args.debounce and not args.dry_run and _unchanged_since_last_push(stamp, digest):
+        return 0
     from . import config as _config
     if getattr(args, "sign", False) or _config.flag("AWSETTINGS_SIGN"):
         from .trust import UntrustedProfileError, seal
@@ -339,6 +366,7 @@ def cmd_push(args) -> int:
         return 1
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
+    _content_stamp(stamp).write_text(digest, encoding="utf-8")
     if not args.quiet:
         kept = sorted(snapshot)
         dropped = sorted(k for k in local if k not in snapshot)
