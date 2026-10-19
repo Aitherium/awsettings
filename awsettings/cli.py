@@ -93,12 +93,18 @@ def _stamp(dom, args=None) -> Path:
 UNCHANGED_RESEND_SECONDS = 3600
 
 
-def _content_stamp(stamp: Path) -> Path:
-    return stamp.with_name(stamp.name + ".sha256")
+def _content_stamp(stamp: Path, target: Path | None = None) -> Path:
+    """Per pushed FILE: git worktrees of one repo share a namespace and a debounce
+    stamp but each has its own settings.local.json, so one marker per stamp let two
+    worktrees with different files overwrite each other's marker and push forever."""
+    if target is None:
+        return stamp.with_name(stamp.name + ".sha256")
+    key = hashlib.sha256(str(Path(target).resolve()).lower().encode("utf-8")).hexdigest()[:12]
+    return stamp.with_name(f"{stamp.name}.{key}.sha256")
 
 
-def _unchanged_since_last_push(stamp: Path, digest: str) -> bool:
-    marker = _content_stamp(stamp)
+def _unchanged_since_last_push(stamp: Path, digest: str, target: Path | None = None) -> bool:
+    marker = _content_stamp(stamp, target)
     try:
         fresh = time.time() - marker.stat().st_mtime < UNCHANGED_RESEND_SECONDS
         return fresh and marker.read_text(encoding="utf-8").strip() == digest
@@ -330,7 +336,7 @@ def cmd_push(args) -> int:
     # ~150 MB/day of changelog, and the hub's directory service crash-looped under it.
     digest = hashlib.sha256(
         json.dumps(snapshot, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-    if args.debounce and not args.dry_run and _unchanged_since_last_push(stamp, digest):
+    if args.debounce and not args.dry_run and _unchanged_since_last_push(stamp, digest, target):
         return 0
     from . import config as _config
     if getattr(args, "sign", False) or _config.flag("AWSETTINGS_SIGN"):
@@ -366,7 +372,7 @@ def cmd_push(args) -> int:
         return 1
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
-    _content_stamp(stamp).write_text(digest, encoding="utf-8")
+    _content_stamp(stamp, target).write_text(digest, encoding="utf-8")
     if not args.quiet:
         kept = sorted(snapshot)
         dropped = sorted(k for k in local if k not in snapshot)

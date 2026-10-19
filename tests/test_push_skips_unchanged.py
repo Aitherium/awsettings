@@ -67,8 +67,26 @@ def test_an_explicit_push_always_sends(tmp_path, monkeypatch):
 def test_unchanged_settings_are_resent_after_an_hour(tmp_path, monkeypatch):
     _, server = _setup(tmp_path, monkeypatch)
     cli.cmd_push(_args(tmp_path))
-    marker = cli._content_stamp(cli._stamp(cli._dom(_args(tmp_path)), _args(tmp_path)))
+    dom = cli._dom(_args(tmp_path))
+    marker = cli._content_stamp(cli._stamp(dom, _args(tmp_path)), dom.locate(str(tmp_path)))
     old = time.time() - cli.UNCHANGED_RESEND_SECONDS - 5
     os.utime(marker, (old, old))
     cli.cmd_push(_args(tmp_path))
+    assert server.puts == 2
+
+
+def test_two_worktrees_with_different_files_each_push_once(tmp_path, monkeypatch):
+    server = _CountingServer()
+    monkeypatch.setattr(cli, "resolve", lambda *a, **k: server)
+    monkeypatch.setattr(cli, "DEBOUNCE_SECONDS", 0)
+    roots = []
+    for name, rule in (("a", "Bash(ls)"), ("b", "Bash(pwd)")):
+        root = tmp_path / name
+        (root / ".claude").mkdir(parents=True)
+        (root / ".claude" / "settings.local.json").write_text(
+            json.dumps({"permissions": {"allow": [rule]}}), encoding="utf-8")
+        roots.append(root)
+    for _ in range(3):
+        for root in roots:
+            cli.cmd_push(_args(root))
     assert server.puts == 2
