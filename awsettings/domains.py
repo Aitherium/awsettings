@@ -622,7 +622,8 @@ NETWORK = Domain(
     # absent: `adapters` -- per-adapter overrides are keyed by ONE machine's adapter names
     # ("Ethernet 2", "eno1"); delivered elsewhere they name a different NIC or none.
     # strict_inbound refuses one arriving, so a profile can never un-manage a NIC here.
-    synced_keys=frozenset({"version", "wired_power_saving", "latency_max_ms"}),
+    synced_keys=frozenset({"version", "wired_power_saving", "latency_max_ms",
+                           "wifi_when_wired"}),
     secret_keys=frozenset(),
     home_subkeys={},
     union_arrays=(),

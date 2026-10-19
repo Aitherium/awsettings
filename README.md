@@ -252,8 +252,13 @@ awsettings network apply     # switches off on physical wired NICs; one UAC / su
 awsettings --domain network push   # the intent follows you; per-adapter overrides stay home
 ```
 
-Only physical wired adapters are touched -- never Wi-Fi, Bluetooth, VPN or a virtual
-switch -- and only toward "disabled". On Windows `apply` elevates once with
+`check` also flags Wi-Fi up on the same subnet as an up wired link (`apply` disables
+that Wi-Fi adapter while the wired link is up; opt out with `wifi_when_wired: keep`),
+and, for each direct mesh (Tailscale) peer on the LAN, an overlay round trip more than
+5 ms over the raw LAN one, plus a local mesh client older than its peers'.
+
+Power-saving switches are touched on physical wired adapters only -- never Wi-Fi,
+Bluetooth, VPN or a virtual switch -- and only toward "disabled". On Windows `apply` elevates once with
 `Start-Process -Verb RunAs` (no `sudo` needed) and judges by re-reading the adapters; on
 Linux it is one `sudo ethtool --set-eee <if> eee off`. Each touched NIC restarts once.
 

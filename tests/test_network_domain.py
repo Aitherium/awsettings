@@ -531,3 +531,164 @@ def test_an_internal_switch_route_is_not_wired():
     raw["switches"] = []
     raw["vnics"] = [{"Name": "vEthernet (Internal)", "ifIndex": 13}]
     assert network.parse_windows_inventory(json.dumps(raw)).gateway is None
+
+
+# --- dual-homed: wired AND Wi-Fi up on one subnet ------------------------------------
+
+
+def _dual_inventory(wifi_status="Up", wifi_ip="10.0.0.21", wired_status="Up"):
+    raw = json.loads(_inventory(
+        _adapter("Ethernet", "Realtek PCIe 2.5GbE Family Controller", 14, INTEL_OK, 7,
+                 status=wired_status),
+        _adapter("Wi-Fi", "Realtek WiFi 7 PCI-E NIC", 9, WIFI_PROPS, 9, status=wifi_status),
+        addrs=[{"ifIndex": 7, "IPAddress": "10.0.0.20", "PrefixLength": 24},
+               {"ifIndex": 9, "IPAddress": wifi_ip, "PrefixLength": 24}]))
+    return json.dumps(raw)
+
+
+def test_dual_homed_same_subnet_is_drift():
+    inv = network.parse_windows_inventory(_dual_inventory())
+    assert [a.name for a in inv.wifi] == ["Wi-Fi"]
+    found = network.dualhome_findings(inv.adapters, inv.wifi, network.Intent())
+    assert [(f.kind, f.adapter, f.ok) for f in found] == [("wifi", "Wi-Fi", False)]
+
+
+def test_wifi_on_another_subnet_is_not_dual_homed():
+    inv = network.parse_windows_inventory(_dual_inventory(wifi_ip="172.16.5.9"))
+    assert network.dualhome_findings(inv.adapters, inv.wifi, network.Intent()) == []
+
+
+def test_wifi_kept_when_intent_says_keep():
+    inv = network.parse_windows_inventory(_dual_inventory())
+    assert network.dualhome_findings(inv.adapters, inv.wifi,
+                                     network.Intent(wifi_when_wired="keep")) == []
+
+
+def test_wired_down_means_wifi_is_left_alone():
+    inv = network.parse_windows_inventory(_dual_inventory(wired_status="Disconnected"))
+    assert network.dualhome_findings(inv.adapters, inv.wifi, network.Intent()) == []
+
+
+def test_wifi_when_wired_travels(intent_file):
+    out = redact({"version": 1, "wifi_when_wired": "keep"}, domain=NET)
+    assert out["wifi_when_wired"] == "keep"
+    intent_file.write_text(json.dumps({"wifi_when_wired": "sometimes"}), encoding="utf-8")
+    with pytest.raises(network.CouldNotRunError):
+        network.load_intent(intent_file)
+
+
+def test_apply_disables_wifi_in_the_same_single_elevation(tmp_path):
+    state = {"wifi": "Up"}
+
+    def inventory(_cmd):
+        return (0, _dual_inventory(wifi_status=state["wifi"]), "")
+
+    def elevate(cmd):
+        plan = json.loads((tmp_path / "apply-plan.json").read_text(encoding="utf-8"))
+        assert plan["changes"] == []
+        assert plan["disable_adapters"] == ["Wi-Fi"]
+        state["wifi"] = "Disabled"
+        (tmp_path / "last-apply.json").write_text(json.dumps(
+            {"exit_code": 0, "applied": 1, "errors": []}), encoding="utf-8")
+        return (0, "", "")
+
+    runner = FakeRunner([("RunAs", elevate), ("Get-NetAdapter", inventory)])
+    rc, lines = network.apply(network.Intent(), platform="win32", runner=runner,
+                              is_admin=lambda: False, state_dir=tmp_path)
+    assert rc == 0, lines
+    assert sum("RunAs" in " ".join(c) for c in runner.calls) == 1
+
+
+def test_linux_dual_homed(tmp_path):
+    sysnet = _sys_net(tmp_path)
+    for name in ("eno1", "wlp2s0"):
+        (sysnet / name / "operstate").write_text("up\n")
+    addr = ("2: eno1    inet 10.0.0.30/24 brd 10.0.0.255 scope global eno1\n"
+            "3: wlp2s0    inet 10.0.0.31/24 brd 10.0.0.255 scope global dynamic wlp2s0\n")
+    runner = FakeRunner([("--show-eee eno1", (0, ETHTOOL_OFF, "")),
+                         ("addr show", (0, addr, "")),
+                         ("route show default", (0, "default via 10.0.0.1 dev eno1\n", ""))])
+    rep = network.check(network.Intent(), platform="linux", runner=runner, sys_net=sysnet,
+                        probe=False, mesh=False)
+    assert rep.exit_code == 1
+    assert any(f.kind == "wifi" and f.adapter == "wlp2s0" for f in rep.findings)
+
+
+# --- mesh overhead: overlay vs raw LAN, and the local client version -------------------
+
+
+TS_STATUS = json.dumps({
+    "Version": "1.98.8-tabc-gdef",
+    "Peer": {
+        "k1": {"HostName": "node-a", "Online": True, "CurAddr": "10.0.0.112:41641",
+               "TailscaleIPs": ["100.64.0.38", "fd7a::26"]},
+        "k2": {"HostName": "node-b", "Online": True, "CurAddr": "",
+               "TailscaleIPs": ["100.64.0.41"]},                       # relayed: skipped
+        "k3": {"HostName": "node-c", "Online": False, "CurAddr": "10.0.0.5:41641",
+               "TailscaleIPs": ["100.64.0.5"]},                        # offline: skipped
+        "k4": {"HostName": "node-d", "Online": True, "CurAddr": "203.0.113.7:41641",
+               "TailscaleIPs": ["100.64.0.7"]},                        # not LAN: skipped
+    },
+})
+TS_NETMAP = json.dumps({"SelfNode": {"Hostinfo": {"IPNVersion": "1.98.8-tabc"}},
+                        "Peers": [{"Name": "node-a.example.", "Online": True,
+                                   "Hostinfo": {"IPNVersion": "1.104.1-t7f4"}}]})
+
+
+def _ping_out(ms):
+    return "".join(f"Reply from x: bytes=32 time={m}ms TTL=64\n" for m in ms)
+
+
+def test_version_compare():
+    assert network.parse_version("1.98.8-tabc-gdef") == (1, 98, 8)
+    assert network.parse_version("1.104.1") > network.parse_version("1.98.8")
+    assert network.parse_version("garbage") is None
+
+
+def test_direct_lan_peers_only():
+    peers = network.direct_lan_peers(json.loads(TS_STATUS))
+    assert peers == [("node-a", "100.64.0.38", "10.0.0.112")]
+
+
+def test_mesh_overhead_and_old_client_are_drift():
+    runner = FakeRunner([
+        ("status --json", (0, TS_STATUS, "")),
+        ("debug netmap", (0, TS_NETMAP, "")),
+        ("100.64.0.38", (0, _ping_out([180, 190, 195]), "")),
+        ("10.0.0.112", (0, _ping_out([1, 2, 1]), "")),
+    ])
+    rep = network.mesh_report(network.Intent(), platform="win32", runner=runner, count=3)
+    assert rep["drift"] == 2, rep["lines"]
+    assert any("OVERLAY" in line for line in rep["lines"])
+    assert any("older" in line for line in rep["lines"])
+
+
+def test_mesh_ok():
+    status = json.loads(TS_STATUS)
+    status["Version"] = "1.104.1-t7f4"
+    runner = FakeRunner([
+        ("status --json", (0, json.dumps(status), "")),
+        ("debug netmap", (0, TS_NETMAP, "")),
+        ("100.64.0.38", (0, _ping_out([2, 3, 2]), "")),
+        ("10.0.0.112", (0, _ping_out([1, 2, 1]), "")),
+    ])
+    rep = network.mesh_report(network.Intent(), platform="win32", runner=runner, count=3)
+    assert rep["drift"] == 0 and not rep["unjudged"], rep["lines"]
+
+
+def test_no_tailscale_is_not_applicable_not_unjudged():
+    rep = network.mesh_report(network.Intent(), platform="win32", runner=FakeRunner([]),
+                              count=3)
+    assert rep["drift"] == 0 and rep["unjudged"] == []
+    assert any("not installed" in line for line in rep["lines"])
+
+
+def test_peer_versions_unreadable_does_not_fail_the_overhead_probe():
+    runner = FakeRunner([
+        ("status --json", (0, TS_STATUS.replace("1.98.8", "1.104.1"), "")),
+        ("debug netmap", (1, "", "access denied")),
+        ("100.64.0.38", (0, _ping_out([2, 2, 2]), "")),
+        ("10.0.0.112", (0, _ping_out([1, 1, 1]), "")),
+    ])
+    rep = network.mesh_report(network.Intent(), platform="win32", runner=runner, count=3)
+    assert rep["drift"] == 0
