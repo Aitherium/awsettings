@@ -131,12 +131,27 @@ def test_uninstall_removes_only_ours():
     assert cmds == ["theirs"]
 
 
-def test_hooks_are_fail_soft():
+def test_hooks_are_fail_soft_and_need_no_shell():
     # A settings sync must never be able to fail a session open: offline is the
-    # normal state of a laptop.
-    cmds = [h["command"] for groups in plan({})["hooks"].values()
-            for g in groups for h in g["hooks"]]
-    assert cmds and all(c.strip().endswith("|| true") for c in cmds)
+    # normal state of a laptop. That used to be a shell's `|| true`; the push hook
+    # runs after EVERY tool call, and on Windows the shell alone cost 3 extra
+    # processes per call. Exec form + --never-fail keeps it fail-soft without one.
+    entries = [h for groups in plan({})["hooks"].values() for g in groups for h in g["hooks"]]
+    assert entries
+    for h in entries:
+        assert h["command"] == "awsettings"
+        assert "--never-fail" in h["args"]
+        assert "||" not in " ".join(h["args"])
+
+
+def test_never_fail_returns_zero_on_bad_args(tmp_path):
+    import pytest
+    from awsettings import cli
+    scope = ["--root", str(tmp_path), "--profile", str(tmp_path / "profile.json")]
+    assert cli.main(scope + ["--never-fail", "pull", "--no-such-flag"]) == 0
+    with pytest.raises(SystemExit) as exc:   # without the flag it still refuses
+        cli.main(scope + ["pull", "--no-such-flag"])
+    assert exc.value.code == 2
 
 
 # --------------------------------------------------------------------------

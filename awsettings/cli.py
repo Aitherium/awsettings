@@ -884,6 +884,17 @@ def _hooks_disabled() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdio()
+    _nf = argv if argv is not None else sys.argv[1:]
+    if "--never-fail" in _nf:
+        # Hook mode: exit 0 whatever happens (offline, bad args, a crash). It
+        # replaces a shell's `|| true`, so the hook can run without a shell.
+        try:
+            main([a for a in _nf if a != "--never-fail"])
+        except BaseException as exc:  # noqa: BLE001 -- the whole point of the flag
+            # Report it, never raise: a sync must not fail a session or a tool call.
+            sys.stderr.write(
+                f"awsettings: --never-fail swallowed {type(exc).__name__}: {exc}" + chr(10))
+        return 0
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
     if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:

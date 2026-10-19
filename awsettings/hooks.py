@@ -36,20 +36,29 @@ MARKER = "awsettings"
 #: ("unrecognized arguments: --quiet") on every SessionStart and every PostToolUse
 #: since install, and `|| true` hid it -- the sync never ran once. Pinned by
 #: test_hook_commands_parse.
-PULL_COMMAND = "awsettings --quiet pull || true"
-PUSH_COMMAND = "awsettings --quiet push --debounce || true"
+PULL_ARGS = ["--quiet", "--never-fail", "pull"]
+PUSH_ARGS = ["--quiet", "--never-fail", "push", "--debounce"]
+#: Display forms (and what a shell would run). The hooks themselves are EXEC form.
+PULL_COMMAND = "awsettings " + " ".join(PULL_ARGS)
+PUSH_COMMAND = "awsettings " + " ".join(PUSH_ARGS)
 
-#: `|| true` on both is deliberate. A settings sync must never be able to fail a
-#: session open or a tool call: offline is the normal state of a laptop, and the
-#: correct behaviour offline is to keep the local file and carry on.
+#: `--never-fail` replaces the old `|| true`. A settings sync must never be able
+#: to fail a session open or a tool call: offline is the normal state of a
+#: laptop, and the correct behaviour offline is to keep the local file and carry
+#: on. It used to take a SHELL to say that, and the push hook runs after EVERY
+#: tool call: on Windows a shell-form hook starts Git's bash launcher, bash and a
+#: console host before awsettings itself -- measured 2026-10-18, 4 processes per
+#: hook, and process churn on that host fed a kernel token leak. Exec form
+#: ("command" + "args") starts awsettings directly; the flag keeps it fail-soft.
 
 
-def _entry(command: str, status_message: str) -> dict[str, Any]:
+def _entry(args: list[str], status_message: str) -> dict[str, Any]:
     return {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": command,
+            "command": "awsettings",
+            "args": list(args),
             "timeout": 20,
             "statusMessage": status_message,   # harness schema key: camelCase is theirs
             MARKER: True,
@@ -69,15 +78,15 @@ def plan(settings: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(hooks, dict):
         raise TypeError("settings.hooks is not an object")
 
-    for event, command, msg in (
-        ("SessionStart", PULL_COMMAND, "Syncing agent settings..."),
-        ("PostToolUse", PUSH_COMMAND, "Pushing agent settings..."),
+    for event, args, msg in (
+        ("SessionStart", PULL_ARGS, "Syncing agent settings..."),
+        ("PostToolUse", PUSH_ARGS, "Pushing agent settings..."),
     ):
         groups = [g for g in hooks.get(event, []) if isinstance(g, dict)]
         # Drop any previous copy of ours before adding, so install is idempotent
         # and a reworded command replaces rather than accumulates.
         groups = [g for g in groups if not _is_ours(g)]
-        groups.append(_entry(command, msg))
+        groups.append(_entry(args, msg))
         hooks[event] = groups
     return out
 
