@@ -11,6 +11,8 @@
     awsettings backends               which model backends this box can launch
     awsettings backends --probe       ...and which of them will actually answer
     awsettings preflight <profile>    can a session launch on this one? 0 yes 1 no 2 unsure
+    awsettings network check          wired NIC power saving + gateway ping: 0 ok 1 drift 2 unsure
+    awsettings network apply          turn wired NIC power saving off (one UAC / sudo prompt)
     awsettings --self-test
 
 Exit **0** did the thing · **1** a rule refused it · **2** could not judge — the
@@ -27,7 +29,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, preset
+from . import __version__, network, preset
 from .backends import CouldNotJudgeError as BackendsCouldNotJudgeError
 from .backends import ProbeVerdict as BackendProbeVerdict
 from .backends import discover as discover_backends
@@ -834,6 +836,7 @@ def self_test() -> int:
     from .domains import claude_namespace as _ns
     if _ns(None) == _ns(Path(tempfile.gettempdir())):
         problems.append("user scope and project scope share one hub namespace")
+    problems.extend("network: " + p for p in network.self_test())
 
     if problems:
         print("SELF-TEST FAILED:")
@@ -957,6 +960,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("profile", help="profile id or launcher name (e.g. deepseek, cds)")
     p.add_argument("--no-cache", action="store_true",
                    help="ignore the 15-minute probe cache and ask the endpoint again")
+    p = sub.add_parser("network", help="wired NIC power saving off + gateway latency probe")
+    network.add_arguments(p)
     p = sub.add_parser("backends")
     p.add_argument("--json", action="store_true",
                    help="machine-readable roster, for a picker in another surface")
@@ -1004,6 +1009,8 @@ def main(argv: list[str] | None = None) -> int:
             return preset.cmd_preset(args)
         if args.cmd == "preflight":
             return cmd_preflight(args)
+        if args.cmd == "network":
+            return network.cmd_network(args)
     except UntrustedProfileError as exc:
         # A profile that cannot be proven yours is REFUSED, and the settings
         # are not applied. This is the one failure that must never be quiet.

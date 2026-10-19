@@ -239,6 +239,24 @@ where a daemon listens is a fact about one machine. An unknown top-level key is 
 on arrival — this file steers what a coding agent runs, so nothing a pull brings in may
 be a key the mod would not have written itself.
 
+## The `network` domain: a wired link that does not nap
+
+A wired desktop pinging its own router at tens of milliseconds, with zero NIC errors, is
+usually NIC power saving (Energy-Efficient Ethernet, Green Ethernet and the vendor
+extras). `~/.aither/network.json` holds the intent -- `wired_power_saving: off` is the
+default even with no file -- and two verbs enforce it on THIS machine:
+
+```bash
+awsettings network check     # 0 ok, 1 drift (a switch on, or avg gateway ping > 5 ms), 2 could not judge
+awsettings network apply     # switches off on physical wired NICs; one UAC / sudo prompt
+awsettings --domain network push   # the intent follows you; per-adapter overrides stay home
+```
+
+Only physical wired adapters are touched -- never Wi-Fi, Bluetooth, VPN or a virtual
+switch -- and only toward "disabled". On Windows `apply` elevates once with
+`Start-Process -Verb RunAs` (no `sudo` needed) and judges by re-reading the adapters; on
+Linux it is one `sudo ethtool --set-eee <if> eee off`. Each touched NIC restarts once.
+
 ## Presets: a whole Claude Code setup in one command
 
 ```bash

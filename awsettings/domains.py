@@ -7,7 +7,7 @@ machine. A **domain** is the small table that tells the engine how to apply them
 a particular file: where it lives, which keys travel, which stay home, which arrays
 union.
 
-Six domains ship:
+The domains that ship (``awsettings domains`` lists them all):
 
 * ``claude`` -- the coding agent's ``settings.local.json``. The original behaviour,
   bit for bit; it is the default so nothing that already calls this package moves.
@@ -40,6 +40,11 @@ Six domains ship:
   overrides can be pulled onto its replacement with ``pull --host <old-name>``.
   Nothing named "stays home" here; a credential-shaped line refuses the whole
   file instead, in both directions (``hostfile.secret_findings``).
+
+* ``network`` -- ``~/.aither/network.json``: the INTENT for wired NICs (power saving
+  off, the gateway latency a wired link must stay under). ``awsettings network
+  check|apply`` enforce it on this machine; per-adapter overrides name this machine's
+  adapters and stay home.
 
 WHY A TABLE AND NOT A SUBCLASS. Every field here is data the self-test can assert
 against. A domain that is code can quietly decide a credential is fine to send; a
@@ -599,10 +604,40 @@ WORKTREES = Domain(
 )
 
 
+def network_intent_path(root: Path | None = None) -> Path:
+    """The network intent file. ``root`` is ignored: a NIC belongs to the MACHINE.
+    ``AWSETTINGS_NETWORK_FILE`` overrides it (tests, a second install)."""
+    override = (os.environ.get("AWSETTINGS_NETWORK_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "network.json"
+
+
+NETWORK = Domain(
+    name="network",
+    namespace="awnetwork",
+    summary="wired NIC intent: power saving (EEE / Green Ethernet) off, and the gateway "
+            "latency a wired link must stay under -- `awsettings network check|apply`",
+    # Only the INTENT travels: "wired power saving off, latency under N ms". Deliberately
+    # absent: `adapters` -- per-adapter overrides are keyed by ONE machine's adapter names
+    # ("Ethernet 2", "eno1"); delivered elsewhere they name a different NIC or none.
+    # strict_inbound refuses one arriving, so a profile can never un-manage a NIC here.
+    synced_keys=frozenset({"version", "wired_power_saving", "latency_max_ms"}),
+    secret_keys=frozenset(),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=False,
+    strict_inbound=True,
+    locate=network_intent_path,
+    hookable=False,
+)
+
+
 def all_domains() -> dict:
     return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
             "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER,
-            "worktrees": WORKTREES}
+            "worktrees": WORKTREES, "network": NETWORK}
 
 
 def get_domain(name: str | None) -> Domain:
