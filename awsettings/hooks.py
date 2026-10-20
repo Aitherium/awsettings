@@ -70,6 +70,14 @@ def _is_ours(group: dict[str, Any]) -> bool:
     return any(h.get(MARKER) for h in group.get("hooks", []) if isinstance(h, dict))
 
 
+def _routed(group: dict[str, Any]) -> bool:
+    """Our hook, already folded into a resident hook runner's http hook (awdk hookd runs
+    console scripts in-process as `ep:awsettings...`). Re-adding a command copy beside it
+    would run the sync twice per tool call."""
+    return any(isinstance(h, dict) and h.get("type") == "http"
+               and "ep%3Aawsettings" in str(h.get("url", "")) for h in group.get("hooks", []))
+
+
 def plan(settings: dict[str, Any]) -> dict[str, Any]:
     """Return settings with our two hooks installed exactly once. Pure."""
     import copy
@@ -86,7 +94,8 @@ def plan(settings: dict[str, Any]) -> dict[str, Any]:
         # Drop any previous copy of ours before adding, so install is idempotent
         # and a reworded command replaces rather than accumulates.
         groups = [g for g in groups if not _is_ours(g)]
-        groups.append(_entry(args, msg))
+        if not any(_routed(g) for g in groups):
+            groups.append(_entry(args, msg))
         hooks[event] = groups
     return out
 
@@ -116,7 +125,7 @@ def installed(settings: dict[str, Any]) -> list[str]:
     if not isinstance(hooks, dict):
         return []
     return sorted(ev for ev, groups in hooks.items()
-                  if any(_is_ours(g) for g in groups if isinstance(g, dict)))
+                  if any(_is_ours(g) or _routed(g) for g in groups if isinstance(g, dict)))
 
 
 def install_to(path: Path) -> tuple[Path, list[str]]:
