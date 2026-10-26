@@ -144,6 +144,10 @@ def test_an_unreadable_profile_file_is_dead_not_empty(tmp_path, monkeypatch):
     broken = tmp_path / "profiles.json"
     broken.write_text("{not json", encoding="utf-8")
     monkeypatch.setenv("AWSETTINGS_BACKEND_PROFILES", str(broken))
+    # The home fallback (~/.aither/claude-backend/profiles.json) loads on a box that has
+    # one and hides the broken file: this test passed in CI and failed on the dev host.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     with pytest.raises(CouldNotJudgeError):
         discover(bin_dir="/nope", have_command=lambda n: True)
 

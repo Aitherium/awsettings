@@ -112,6 +112,43 @@ def _unchanged_since_last_push(stamp: Path, digest: str, target: Path | None = N
         return False
 
 
+# A hook push that could not reach the store holds the next hook pushes this long. A
+# failed push writes no debounce stamp, so on 2026-10-26, with the store answering 503
+# for hours, every tool call in every session paid the dead round trip (~1.2-1.8 s).
+FAILED_PUSH_BACKOFF_SECONDS = 120
+
+
+def _failed_stamp(stamp: Path) -> Path:
+    return stamp.with_name(stamp.name + ".failed")
+
+
+def _backing_off(stamp: Path) -> bool:
+    try:
+        age = time.time() - _failed_stamp(stamp).stat().st_mtime
+    except OSError:
+        return False        # no failure on record
+    return age < FAILED_PUSH_BACKOFF_SECONDS
+
+
+def _note_failed_push(stamp: Path) -> None:
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        _failed_stamp(stamp).write_text(str(time.time()), encoding="utf-8")
+    except OSError as exc:
+        # Without the stamp the next hook just retries: slower, never wrong.
+        print(f"awsettings: backoff stamp not written ({exc})", file=sys.stderr)
+
+
+def _clear_failed_push(stamp: Path) -> None:
+    failed = _failed_stamp(stamp)
+    if not failed.exists():
+        return
+    try:
+        failed.unlink()
+    except OSError as exc:
+        print(f"awsettings: stale backoff stamp kept ({exc})", file=sys.stderr)
+
+
 def _opaque(args, dom, fn) -> int:
     """Run one hostfile command for an opaque (one-copy-per-host) domain."""
     target = dom.locate(_root(args))
@@ -301,6 +338,9 @@ def cmd_push(args) -> int:
             recent = False      # no stamp yet: nothing to debounce against
         if recent:
             return 0
+        if _backing_off(stamp):
+            # The push that started the backoff already reported the failure.
+            return 0
     if dom.opaque:
         from .hostfile import cmd_push as opaque_push
         rc = _opaque(args, dom, opaque_push)
@@ -360,6 +400,8 @@ def cmd_push(args) -> int:
     try:
         backend.put(snapshot)
     except CouldNotRunError as exc:
+        if args.debounce:
+            _note_failed_push(stamp)
         if not args.quiet:
             print(f"DEAD: {exc}")
         return 2
@@ -373,6 +415,7 @@ def cmd_push(args) -> int:
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
     _content_stamp(stamp, target).write_text(digest, encoding="utf-8")
+    _clear_failed_push(stamp)
     if not args.quiet:
         kept = sorted(snapshot)
         dropped = sorted(k for k in local if k not in snapshot)
