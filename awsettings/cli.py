@@ -349,7 +349,6 @@ def cmd_push(args) -> int:
             stamp.write_text(str(time.time()), encoding="utf-8")
         return rc
     target = dom.locate(_root(args))
-    backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     scan_note: list[str] = []
     try:
         if dom.refresh is not None and not args.dry_run:
@@ -378,6 +377,11 @@ def cmd_push(args) -> int:
         json.dumps(snapshot, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     if args.debounce and not args.dry_run and _unchanged_since_last_push(stamp, digest, target):
         return 0
+    # Resolve the store and its credential ONLY once a push will really happen.
+    # Measured 2026-10-26: resolve() spends ~0.8-1.3 s in a token subprocess, and it
+    # used to run BEFORE the unchanged-settings skip, so every tool call in every
+    # session paid it even when there was nothing to send.
+    backend = resolve(args.url, args.profile, namespace=_namespace(dom, args))
     from . import config as _config
     if getattr(args, "sign", False) or _config.flag("AWSETTINGS_SIGN"):
         from .trust import UntrustedProfileError, seal

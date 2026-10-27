@@ -77,3 +77,23 @@ def test_an_explicit_push_ignores_the_backoff(tmp_path, monkeypatch):
     cli.cmd_push(_args(tmp_path))
     assert cli.cmd_push(_args(tmp_path, debounce=False)) == 2
     assert store.attempts == 2
+
+
+def test_an_unchanged_push_never_resolves_the_token(tmp_path, monkeypatch):
+    """2026-10-26: resolve() spent ~0.8-1.3 s in a token subprocess BEFORE the
+    unchanged-settings skip, so every tool call in every session paid it."""
+    store = _setup(tmp_path, monkeypatch)
+    store.up = True
+    calls = []
+
+    def counting_resolve(*a, **k):
+        calls.append(a)
+        return store
+
+    monkeypatch.setattr(cli, "resolve", counting_resolve)
+    assert cli.cmd_push(_args(tmp_path)) == 0
+    assert len(calls) == 1                       # the first push really sends
+    for _ in range(3):
+        assert cli.cmd_push(_args(tmp_path)) == 0
+    assert len(calls) == 1                       # unchanged: no token, no store
+    assert store.attempts == 1
