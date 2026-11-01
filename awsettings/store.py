@@ -97,3 +97,21 @@ def known_marketplaces() -> set[str]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return set()
     return {str(k) for k in data} if isinstance(data, dict) else set()
+
+
+#: Separator between a domain namespace and the member it belongs to.
+MEMBER_SEP = ".m."
+
+
+def member_namespace(namespace: str, member: str | None = None) -> str:
+    """``namespace`` scoped to one workspace member, or unchanged with no member.
+
+    ``member`` defaults to the signed-in member from config (``adk join``). The owner's
+    machines carry no member key, so their namespaces stay byte-identical.
+    """
+    if member is None:
+        from .config import member_key
+        member = member_key()
+    if not member or MEMBER_SEP in namespace:
+        return namespace
+    return f"{namespace}{MEMBER_SEP}{member}"

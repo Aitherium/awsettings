@@ -228,3 +228,41 @@ def test_status_names_the_remote_even_when_the_token_helper_fails(monkeypatch, c
     out = capsys.readouterr().out
     assert "remote: https://hub.invalid/prefs [claude_project_" in out
     assert "DEAD:" in out
+
+
+# --- (5) per-member namespaces (adk join) -------------------------------------------
+
+def test_owner_config_without_a_member_keeps_every_namespace(tmp_path, monkeypatch):
+    from awsettings import config, store
+    monkeypatch.setenv("AWSETTINGS_HOME", str(tmp_path))
+    monkeypatch.delenv("AWSETTINGS_MEMBER", raising=False)
+    config.save({"url": "https://hub.example"})
+    assert config.member_key() == ""
+    assert store.member_namespace("awdesk") == "awdesk"
+    assert store.member_namespace(USER_NAMESPACE) == USER_NAMESPACE
+
+
+def test_a_joined_member_gets_their_own_namespace(tmp_path, monkeypatch):
+    from awsettings import config, store
+    monkeypatch.setenv("AWSETTINGS_HOME", str(tmp_path))
+    monkeypatch.delenv("AWSETTINGS_MEMBER", raising=False)
+    config.save({"member": "U-Alice@Aitherium"})
+    assert config.member_key() == "u-alice-aitherium"
+    alice = store.member_namespace("awdesk")
+    assert alice == "awdesk.m.u-alice-aitherium"
+    assert store.member_namespace("awdesk", "bob") != alice
+    assert store.member_namespace(alice) == alice  # never double-suffixed
+
+
+def test_cli_namespace_follows_the_member(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from awsettings import config
+    from awsettings.domains import get_domain
+    monkeypatch.setenv("AWSETTINGS_HOME", str(tmp_path))
+    monkeypatch.delenv("AWSETTINGS_MEMBER", raising=False)
+    dom = get_domain("desk")
+    args = SimpleNamespace(user=False, root=None)
+    assert cli._namespace(dom, args) == dom.namespace
+    config.save({"member": "alice"})
+    assert cli._namespace(dom, args) == f"{dom.namespace}.m.alice"

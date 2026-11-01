@@ -73,9 +73,11 @@ def _dom(args):
 def _namespace(dom, args) -> str:
     """The hub namespace this invocation reads and writes. The claude domain has one
     per project and a separate one for ``--user``; every other domain is per user."""
+    from .store import member_namespace
+
     if dom.name == "claude":
-        return claude_namespace(_root(args))
-    return dom.namespace
+        return member_namespace(claude_namespace(_root(args)))
+    return member_namespace(dom.namespace)
 
 
 def _stamp(dom, args=None) -> Path:

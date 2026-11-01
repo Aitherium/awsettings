@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,11 @@ KEYS = {
     "sign": "AWSETTINGS_SIGN",
     "require_seal": "AWSETTINGS_REQUIRE_SEAL",
     "public_key": "AWSETTINGS_PUBLIC_KEY",
+    # The signed-in workspace member (their Identity user id), written by `adk join`.
+    # Set: every remote namespace is suffixed per member, so two employees on one hub
+    # never read or write each other's settings. Unset (the owner's existing machines,
+    # `adk enroll`): namespaces are exactly what they were.
+    "member": "AWSETTINGS_MEMBER",
 }
 
 
@@ -52,6 +58,19 @@ def get(env_name: str) -> str:
                 return "1" if raw else ""
             return str(raw).strip() if raw is not None else ""
     return ""
+
+
+_MEMBER_RX = re.compile(r"[^a-z0-9_-]+")
+
+
+def member_key() -> str:
+    """The signed-in member as a namespace-safe key, or "" (owner / not joined).
+
+    Lower-cased, anything outside ``[a-z0-9_-]`` folded to ``-``, capped at 64. A uid
+    that folds to nothing reads as "no member" rather than a shared empty namespace.
+    """
+    raw = get("AWSETTINGS_MEMBER").lower()
+    return _MEMBER_RX.sub("-", raw).strip("-")[:64]
 
 
 def flag(env_name: str) -> bool:
