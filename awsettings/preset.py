@@ -83,8 +83,9 @@ NAMESPACE = USER_NAMESPACE
 PRESETS: dict[str, dict[str, Any]] = {
     "aitherium-claude": {
         "summary": "voice dictation, English, a sonnet fallback, cross-session inbox, "
-                   "PR links in the footer, aw* spinner tips, the aither output style, "
-                   "and the awsh plugin from the public awdk repo",
+                   "PR links in the footer, aw* spinner tips, the aither output style "
+                   "(ADHD-shaped: next action first, lists capped at five), and the "
+                   "awsh plugin from the public awdk repo (carries the i-have-adhd skill)",
         "settings": {
             "voice": {"enabled": True, "mode": "tap"},
             "language": "english",
@@ -113,6 +114,9 @@ PRESETS: dict[str, dict[str, Any]] = {
                              "other sessions"},
                     {"id": "awgit", "cooldownSessions": 3,
                      "text": "awgit lease acquire <paths> before editing shared files"},
+                    {"id": "i-have-adhd", "cooldownSessions": 5,
+                     "text": "/i-have-adhd -- answers lead with the next action, lists "
+                             "capped at five, one Next: line"},
                     {"id": "voice", "cooldownSessions": 5,
                      "text": "Tap Space on an empty prompt to dictate; tap again to send"},
                 ],
