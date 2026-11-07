@@ -362,6 +362,38 @@ DARKMATTER = Domain(
 )
 
 
+def privacy_exclusions_path(root: Path | None = None) -> Path:
+    """The desk's search exclusions. ``root`` is ignored: it is per USER.
+
+    ``AWSETTINGS_PRIVACY_FILE`` is for tests; the desk reads the default path.
+    """
+    override = (os.environ.get("AWSETTINGS_PRIVACY_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".aither" / "search-exclusions.json"
+
+
+PRIVACY = Domain(
+    name="privacy",
+    namespace="awprivacy",
+    summary="what search hides by default on every machine: games, adult titles, the owner's own "
+            "folders, titles and patterns, and what is always allowed",
+    # Only the RULES travel. The temporary !private reveal is never written to disk on
+    # purpose, so there is nothing here that could carry "show everything" to a second
+    # machine -- a reveal is a moment on one screen, not a setting.
+    synced_keys=frozenset({"hideGames", "hideAdult", "folders", "titles", "patterns", "allow"}),
+    secret_keys=frozenset(),
+    home_subkeys={},
+    # A title hidden on one machine is hidden on all: the lists merge as a union.
+    union_arrays=(("folders",), ("titles",), ("patterns",), ("allow",)),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    locate=privacy_exclusions_path,
+    hookable=False,
+)
+
+
 def memory_config_path(root: Path | None = None) -> Path:
     """The memory lander's config. ``root`` is ignored: it is per USER.
 
@@ -638,7 +670,7 @@ NETWORK = Domain(
 def all_domains() -> dict:
     return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
             "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER,
-            "worktrees": WORKTREES, "network": NETWORK}
+            "worktrees": WORKTREES, "network": NETWORK, "privacy": PRIVACY}
 
 
 def get_domain(name: str | None) -> Domain:
