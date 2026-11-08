@@ -51,6 +51,39 @@ SECRET_KEYS = frozenset({
     "policyHelper",
 })
 
+#: The ONE door through `env`. The block stays a secret key (values are routinely
+#: tokens), but these named Claude Code tuning knobs are timeouts, limits and
+#: switches -- the settings a tuned machine wants on every other machine, and the
+#: only part of `env` that may travel. A name off this list never leaves and is
+#: never accepted; a listed name travels only with a short plain value
+#: (PORTABLE_ENV_VALUE), so a token pasted into the wrong variable still stays home.
+PORTABLE_ENV = frozenset({
+    "BASH_DEFAULT_TIMEOUT_MS",
+    "BASH_MAX_TIMEOUT_MS",
+    "BASH_MAX_OUTPUT_LENGTH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "MAX_THINKING_TOKENS",
+    "MAX_MCP_OUTPUT_TOKENS",
+    "MCP_TIMEOUT",
+    "MCP_TOOL_TIMEOUT",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "DISABLE_TELEMETRY",
+    "DISABLE_ERROR_REPORTING",
+    "DISABLE_AUTOUPDATER",
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+})
+PORTABLE_ENV_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,32}")
+
+
+def portable_env(env: Any) -> dict[str, str]:
+    """The allowlisted, plain-valued subset of an ``env`` block; {} for anything else."""
+    if not isinstance(env, dict):
+        return {}
+    return {k: v for k, v in env.items()
+            if k in PORTABLE_ENV and isinstance(v, str) and PORTABLE_ENV_VALUE.fullmatch(v)}
+
+
 #: Sub-objects that hold credential material inside an otherwise-syncable key.
 SECRET_SUBKEYS: dict[str, frozenset[str]] = {
     "sandbox": frozenset({"credentials"}),
@@ -295,6 +328,10 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
             if not v:
                 continue
         out[k] = copy.deepcopy(v)
+    if dom.secret_keys is SECRET_KEYS:
+        env = portable_env(settings.get("env"))
+        if env:
+            out["env"] = env
     return out
 
 
@@ -429,6 +466,13 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
     for k in dom.secret_keys:
         if k in local:
             out[k] = copy.deepcopy(local[k])
+    # After the credential restore above: only the allowlisted tuning knobs may
+    # arrive, layered over this machine's own env (its tokens stay as they were).
+    if dom.secret_keys is SECRET_KEYS:
+        arriving_env = portable_env(remote.get("env"))
+        if arriving_env:
+            mine = out.get("env") if isinstance(out.get("env"), dict) else {}
+            out["env"] = {**mine, **arriving_env}
     return out
 
 

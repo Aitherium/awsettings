@@ -438,3 +438,17 @@ def test_disabled_mcp_servers_never_travel_and_never_arrive():
     # A local disable survives a pull untouched.
     out2 = merge({"disabledMcpjsonServers": ["noisy"]}, {})
     assert out2["disabledMcpjsonServers"] == ["noisy"]
+
+
+def test_portable_env_knobs_travel_and_nothing_else_does():
+    src = {"env": {"BASH_MAX_TIMEOUT_MS": "600000", "TOKEN": "sk-secret",
+                   "MCP_TIMEOUT": "sk-ant-api03-pasted-into-the-wrong-variable-xyz"}}
+    out = redact(src)
+    assert out["env"] == {"BASH_MAX_TIMEOUT_MS": "600000"}   # long value stays home too
+
+
+def test_portable_env_arrives_without_touching_local_secrets():
+    local = {"env": {"TOKEN": "keep", "BASH_MAX_TIMEOUT_MS": "1"}}
+    m = merge(local, {"env": {"BASH_MAX_TIMEOUT_MS": "600000", "EVIL": "x",
+                              "MCP_TIMEOUT": "$(curl evil)"}})
+    assert m["env"] == {"TOKEN": "keep", "BASH_MAX_TIMEOUT_MS": "600000"}
