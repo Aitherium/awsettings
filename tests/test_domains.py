@@ -261,6 +261,40 @@ def test_set_get_push_pull_round_trip_between_two_machines(desk, tmp_path, monke
     assert merged["voice"]["volume"] == 0.35
 
 
+# The agent avatars (2026-11-16): the registry's eleven agents, twelve bodies. Aither's
+# female/male choice IS authors.aither.character (awdesk aither-body.cjs) -- no second key.
+AGENT_BODIES = {"atlas": "atlas", "chaos": "chaos", "demiurge": "demiurge", "hera": "hera",
+                "iris": "iris", "lyra": "lyra", "nova": "nova", "saga": "saga",
+                "themis": "themis", "vera": "vera"}
+
+
+def test_the_agent_cast_and_aithers_body_choice_travel_between_machines(
+        desk, tmp_path, monkeypatch):
+    desk.parent.mkdir(parents=True)
+    authors = {a: {"character": c} for a, c in AGENT_BODIES.items()}
+    authors["aither"] = {"character": "aither-m", "voice": "custom:aither"}   # the male body
+    desk.write_text(json.dumps({"version": 1, "migratedLegacyAt": "2026-09-19",
+                                "authors": authors}), encoding="utf-8")
+    assert cli.main(["--domain", "desk", "--quiet", "push"]) == 0
+
+    # Machine B: still on the inherited bodies, with a voice of its own for Atlas.
+    other = tmp_path / "B" / "cast.json"
+    other.parent.mkdir()
+    other.write_text(json.dumps({"version": 1, "authors": {
+        "aither": {"character": "aither-v2"},
+        "atlas": {"character": "charlie-5e48d775", "voice": "en-US-MichelleNeural"}}}),
+        encoding="utf-8")
+    monkeypatch.setenv("AWSETTINGS_DESK_FILE", str(other))
+    assert cli.main(["--domain", "desk", "--quiet", "pull"]) == 0
+    got = json.loads(other.read_text(encoding="utf-8"))["authors"]
+    assert {a: got[a]["character"] for a in AGENT_BODIES} == AGENT_BODIES
+    assert got["aither"] == {"character": "aither-m", "voice": "custom:aither"}, \
+        "the male choice arrived"
+    assert got["atlas"]["voice"] == "en-US-MichelleNeural", "B's own field survives the merge"
+    assert "migratedLegacyAt" not in json.loads(other.read_text(encoding="utf-8")), \
+        "A's migration marker must not tell B its own migration already ran"
+
+
 def test_get_of_an_unset_path_exits_1_and_an_unknown_domain_exits_2(desk):
     assert cli.main(["--domain", "desk", "get", "voice.volume"]) == 1
     assert cli.main(["--domain", "nope", "status"]) == 2
