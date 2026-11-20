@@ -21,6 +21,12 @@ dev = ["pytest>=7.0", "httpx>=0.25.0"]
 
 [project.scripts]
 awsettings = "awsettings.cli:main"
+#: The platform-first PreToolUse guard (Bash/PowerShell). Rendered byte-identically
+#: from AitherOS/dev/tools/platform_first_rules.py by gen_platform_first.py; when
+#: hooks.plan() installs it as a portable hook, one machine's session refuses a
+#: hand-rolled command on every machine that syncs. A console script rather than a
+#: script path because a path cannot travel between machines.
+awsettings-guard = "awsettings.platform_first:guard_main"
 
 [project.urls]
 Homepage = "https://github.com/Aitherium/awsettings"
