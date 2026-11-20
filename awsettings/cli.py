@@ -695,6 +695,8 @@ def cmd_hook(args) -> int:
         print(f"installed into {path}: {', '.join(evs) or 'nothing'}")
         print("  SessionStart -> pull   (a new machine is stale before its first tool call)")
         print("  PostToolUse  -> push   (debounced; a rule you approve here is on its way)")
+        print("  PreToolUse   -> guard  (Bash/PowerShell: no hand-rolled scripts, no bare "
+              "processes; names the platform lane instead)")
         return 0
     path, evs = uninstall_from(target)
     print(f"removed from {path}; still installed: {', '.join(evs) or 'nothing'}")

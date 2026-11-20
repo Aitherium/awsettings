@@ -39,6 +39,12 @@ def _setup(tmp_path, monkeypatch):
     server = _CountingServer()
     monkeypatch.setattr(cli, "resolve", lambda *a, **k: server)
     monkeypatch.setattr(cli, "DEBOUNCE_SECONDS", 0)
+    # Isolate the debounce/backoff stamp in this tmp tree. conftest.py does this, but
+    # the change-lane runs with --noconftest; without it these tests read (and write)
+    # the developer's real ~/.awsettings, where a sibling test or a live failed hook
+    # push leaves `last-push.failed`, and `_backing_off` then makes every push a no-op
+    # (measured: 2 failed, 3 passed on #17786).
+    monkeypatch.setattr(cli, "DEBOUNCE_STAMP", tmp_path / ".awsettings" / "last-push")
     return settings, server
 
 
@@ -79,6 +85,8 @@ def test_two_worktrees_with_different_files_each_push_once(tmp_path, monkeypatch
     server = _CountingServer()
     monkeypatch.setattr(cli, "resolve", lambda *a, **k: server)
     monkeypatch.setattr(cli, "DEBOUNCE_SECONDS", 0)
+    # Same isolation as _setup(): never touch the real ~/.awsettings under --noconftest.
+    monkeypatch.setattr(cli, "DEBOUNCE_STAMP", tmp_path / ".awsettings" / "last-push")
     roots = []
     for name, rule in (("a", "Bash(ls)"), ("b", "Bash(pwd)")):
         root = tmp_path / name

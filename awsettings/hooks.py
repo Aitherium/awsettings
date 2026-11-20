@@ -6,7 +6,7 @@ it dies quietly, which is the same failure as the drift it was meant to fix.
 A hook runs at a moment that already exists, has an owner, and is visible in the
 config file it lives in.
 
-Two hooks, and the split matters:
+Three hooks, and the split matters:
 
 * **SessionStart -> pull.** The moment a new machine, shell or container opens a
   session is exactly when its settings are most likely to be stale, and it is
@@ -14,10 +14,15 @@ Two hooks, and the split matters:
 * **A settings write -> push.** Debounced, fail-soft. The trigger is the file
   actually changing, so a rule you approve on one machine is on its way to the
   others before you have finished the thought.
+* **PreToolUse (Bash|PowerShell) -> guard.** ``awsettings-guard`` is the
+  platform-first guard (``awsettings.platform_first``): it refuses a hand-rolled
+  script or a bare backgrounded process and names the platform lane to use
+  instead. Same installer, same marker, so the rule follows the owner to every
+  machine without anyone editing a settings file by hand.
 
-Both are installed INTO the settings file the harness already reads, and both
-are idempotent: installing twice leaves one hook, because a hook that
-accumulates copies is a hook that eventually runs N times per event.
+All are installed INTO the settings file the harness already reads, and all are
+idempotent: installing twice leaves one hook, because a hook that accumulates
+copies is a hook that eventually runs N times per event.
 """
 from __future__ import annotations
 
@@ -52,14 +57,18 @@ PUSH_COMMAND = "awsettings " + " ".join(PUSH_ARGS)
 #: ("command" + "args") starts awsettings directly; the flag keeps it fail-soft.
 
 
-def _entry(args: list[str], status_message: str) -> dict[str, Any]:
+def _entry(args: list[str], status_message: str, matcher: str = "",
+           command: str = "awsettings", timeout: int = 20) -> dict[str, Any]:
+    """One EXEC-form hook group. ``command`` + ``args`` starts the binary directly
+    (no shell); ``matcher`` is the harness tool-name filter, empty for the two
+    settings hooks and ``Bash|PowerShell`` for the guard."""
     return {
-        "matcher": "",
+        "matcher": matcher,
         "hooks": [{
             "type": "command",
-            "command": "awsettings",
+            "command": command,
             "args": list(args),
-            "timeout": 20,
+            "timeout": timeout,
             "statusMessage": status_message,   # harness schema key: camelCase is theirs
             MARKER: True,
         }],
@@ -79,23 +88,29 @@ def _routed(group: dict[str, Any]) -> bool:
 
 
 def plan(settings: dict[str, Any]) -> dict[str, Any]:
-    """Return settings with our two hooks installed exactly once. Pure."""
+    """Return settings with our three hooks installed exactly once. Pure."""
     import copy
     out = copy.deepcopy(settings)
     hooks = out.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise TypeError("settings.hooks is not an object")
 
-    for event, args, msg in (
-        ("SessionStart", PULL_ARGS, "Syncing agent settings..."),
-        ("PostToolUse", PUSH_ARGS, "Pushing agent settings..."),
+    # (event, args, status message, matcher, command, timeout). The guard is
+    # EXEC-form with NO absolute path, so the same entry is valid on every OS and
+    # portable_hooks() can carry it between machines unchanged.
+    for event, args, msg, matcher, command, timeout in (
+        ("SessionStart", PULL_ARGS, "Syncing agent settings...", "", "awsettings", 20),
+        ("PostToolUse", PUSH_ARGS, "Pushing agent settings...", "", "awsettings", 20),
+        ("PreToolUse", [], "Checking platform lanes...", "Bash|PowerShell",
+         "awsettings-guard", 10),
     ):
         groups = [g for g in hooks.get(event, []) if isinstance(g, dict)]
         # Drop any previous copy of ours before adding, so install is idempotent
         # and a reworded command replaces rather than accumulates.
         groups = [g for g in groups if not _is_ours(g)]
         if not any(_routed(g) for g in groups):
-            groups.append(_entry(args, msg))
+            groups.append(_entry(args, msg, matcher=matcher, command=command,
+                                 timeout=timeout))
         hooks[event] = groups
     return out
 

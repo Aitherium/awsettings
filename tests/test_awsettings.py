@@ -139,9 +139,11 @@ def test_hooks_are_fail_soft_and_need_no_shell():
     entries = [h for groups in plan({})["hooks"].values() for g in groups for h in g["hooks"]]
     assert entries
     for h in entries:
-        assert h["command"] == "awsettings"
-        assert "--never-fail" in h["args"]
+        assert h["command"] in ("awsettings", "awsettings-guard")
         assert "||" not in " ".join(h["args"])
+        if h["command"] == "awsettings":
+            # The settings sync needs --never-fail; the guard is fail-open by design.
+            assert "--never-fail" in h["args"]
 
 
 def test_never_fail_returns_zero_on_bad_args(tmp_path):

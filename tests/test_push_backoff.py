@@ -45,6 +45,11 @@ def _setup(tmp_path, monkeypatch):
     store = _Store()
     monkeypatch.setattr(cli, "resolve", lambda *a, **k: store)
     monkeypatch.setattr(cli, "DEBOUNCE_SECONDS", 0)
+    # Isolate the debounce/backoff stamp in this tmp tree. conftest.py does this, but
+    # the change-lane runs with --noconftest; without it these tests write a real
+    # ~/.awsettings/last-push.failed that makes the next test file's pushes no-ops
+    # (measured: the same cross-file pollution that reddened #17786).
+    monkeypatch.setattr(cli, "DEBOUNCE_STAMP", tmp_path / ".awsettings" / "last-push")
     return store
 
 

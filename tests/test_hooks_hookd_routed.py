@@ -21,6 +21,7 @@ def test_routed_push_reports_installed():
     assert hooks.installed(_routed_settings()) == ["PostToolUse"]
 
 
-def test_plain_settings_still_get_both_hooks():
+def test_plain_settings_get_all_three_hooks():
     out = hooks.plan({})
-    assert hooks.installed(out) == ["PostToolUse", "SessionStart"]
+    # pull, push, and the platform-first guard (PreToolUse on Bash|PowerShell).
+    assert hooks.installed(out) == ["PostToolUse", "PreToolUse", "SessionStart"]
