@@ -667,8 +667,35 @@ NETWORK = Domain(
 )
 
 
+def antigravity_config_path(root: Path | None = None) -> Path:
+    """Google Antigravity's user config.json. ``root`` is ignored: per USER."""
+    override = (os.environ.get("AWSETTINGS_ANTIGRAVITY_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".gemini" / "config" / "config.json"
+
+
+ANTIGRAVITY = Domain(
+    name="antigravity",
+    namespace="antigravity_user",
+    summary="Google Antigravity portable user settings and plugin toggles "
+            "(machine-local hostnames, credentials, and sidecar project ids stay home)",
+    synced_keys=frozenset({"plugins", "userSettings"}),
+    secret_keys=frozenset({"oauth_creds", "tokens", "apiKey", "auth"}),
+    home_subkeys={
+        "userSettings": {"remoteControlHostname", "sandboxEnabledAtV2Migration"},
+    },
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    locate=antigravity_config_path,
+    hookable=False,
+)
+
+
 def all_domains() -> dict:
-    return {"claude": _claude(), "desk": DESK, "mods": MODS, "memory": MEMORY,
+    return {"claude": _claude(), "antigravity": ANTIGRAVITY, "desk": DESK, "mods": MODS, "memory": MEMORY,
             "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER,
             "worktrees": WORKTREES, "network": NETWORK, "privacy": PRIVACY}
 
