@@ -101,6 +101,9 @@ class Domain:
     #: Top-level keys holding a harness hooks map. Only entries marked portable
     #: travel, in either direction (``core.portable_hooks``).
     hook_keys: frozenset = frozenset()
+    #: Top-level keys holding an awrise jobs map. Only portable agent/session jobs
+    #: with allowlisted spec fields travel, in either direction (``core.portable_awrise_jobs``).
+    job_keys: frozenset = frozenset()
     #: Resolves the local file. ``root`` is a project dir, or None for user-level.
     locate: Callable = local_settings_path
     #: Whether the agent-harness hooks make sense for this file.
@@ -127,6 +130,12 @@ class Domain:
     #: (``companions``: recreate missing roster folders, say how to get memories
     #: back). ``args.dry_run`` means report, write nothing.
     after_pull: Callable | None = None
+    #: Optional per-path predicate ``{union_array_path: fn(item) -> bool}`` keeping
+    #: only portable items on redact and merge (e.g. dropping ephemeral per-session
+    #: scratch paths from Antigravity's allow list while never touching denies).
+    union_filters: dict = field(default_factory=dict)
+    #: True for declarative user-defined domains loaded from ~/.awsettings/domains.json.
+    custom: bool = False
 
 
 def _desk_user_data() -> Path:
@@ -675,18 +684,38 @@ def antigravity_config_path(root: Path | None = None) -> Path:
     return Path.home() / ".gemini" / "config" / "config.json"
 
 
+_ANTIGRAVITY_EPHEMERAL_GRANT_RE = re.compile(
+    r"(?:^|[/\\])\.gemini[/\\]antigravity[/\\]brain[/\\]"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[/\\]",
+    re.IGNORECASE,
+)
+
+
+def _portable_antigravity_allow(item: object) -> bool:
+    """Drop ephemeral per-conversation scratch paths from synced Antigravity allow grants."""
+    if not isinstance(item, str) or not item.strip():
+        return False
+    return not bool(_ANTIGRAVITY_EPHEMERAL_GRANT_RE.search(item))
+
+
 ANTIGRAVITY = Domain(
     name="antigravity",
     namespace="antigravity_user",
     summary="Google Antigravity portable user settings and plugin toggles "
-            "(machine-local hostnames, credentials, and sidecar project ids stay home)",
+            "(machine-local hostnames, credentials, ephemeral scratch grants, and sidecar project ids stay home)",
     synced_keys=frozenset({"plugins", "userSettings"}),
     secret_keys=frozenset({"oauth_creds", "tokens", "apiKey", "auth"}),
     home_subkeys={
-        "userSettings": {"remoteControlHostname", "sandboxEnabledAtV2Migration"},
+        "userSettings": frozenset({"remoteControlHostname", "sandboxEnabledAtV2Migration"}),
     },
-    union_arrays=(),
-    one_way=frozenset(),
+    union_arrays=(
+        ("userSettings", "globalPermissionGrants", "allow"),
+        ("userSettings", "globalPermissionGrants", "deny"),
+    ),
+    union_filters={
+        ("userSettings", "globalPermissionGrants", "allow"): _portable_antigravity_allow,
+    },
+    one_way=frozenset({"deny"}),
     deep=True,
     strict_inbound=True,
     locate=antigravity_config_path,
@@ -694,10 +723,367 @@ ANTIGRAVITY = Domain(
 )
 
 
-def all_domains() -> dict:
-    return {"claude": _claude(), "antigravity": ANTIGRAVITY, "desk": DESK, "mods": MODS, "memory": MEMORY,
-            "companions": COMPANIONS, "aitherzero": AITHERZERO, "darkmatter": DARKMATTER,
-            "worktrees": WORKTREES, "network": NETWORK, "privacy": PRIVACY}
+def awrise_jobs_path(root: Path | None = None) -> Path:
+    """awrise's jobs.json. ``root`` is ignored: scheduled wakes are per USER.
+
+    ``AWSETTINGS_AWRISE_FILE`` overrides the file directly; ``AWRISE_HOME`` is
+    honoured because awrise itself reads it.
+    """
+    override = (os.environ.get("AWSETTINGS_AWRISE_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    awrise_home = (os.environ.get("AWRISE_HOME") or "").strip()
+    if awrise_home:
+        return Path(awrise_home).expanduser().resolve() / "jobs.json"
+    return Path.home() / ".aither" / "awrise" / "jobs.json"
+
+
+AWRISE = Domain(
+    name="awrise",
+    namespace="awrise_jobs",
+    summary="awrise portable scheduled agent/session jobs (shell commands, cwd, "
+            "bearer_file, receipt, wake units, and per-machine run history stay home)",
+    synced_keys=frozenset({"jobs"}),
+    secret_keys=frozenset({"bearer_file", "bearer", "token", "secret", "api_key"}),
+    home_subkeys={},
+    union_arrays=(),
+    one_way=frozenset(),
+    deep=True,
+    strict_inbound=True,
+    job_keys=frozenset({"jobs"}),
+    locate=awrise_jobs_path,
+    hookable=False,
+)
+
+
+def awgov_config_path(root: Path | None = None) -> Path:
+    """awgov's user governance preferences. ``root`` is ignored: per USER.
+
+    ``AWSETTINGS_AWGOV_FILE`` overrides the file directly; ``AWGOV_HOME`` is
+    honoured because awgov itself reads it.
+    """
+    override = (os.environ.get("AWSETTINGS_AWGOV_FILE") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    awgov_home = (os.environ.get("AWGOV_HOME") or "").strip()
+    if awgov_home:
+        return Path(awgov_home).expanduser().resolve() / "config.json"
+    return Path.home() / ".aither" / "awgov" / "config.json"
+
+
+AWGOV = Domain(
+    name="awgov",
+    namespace="awgov_user",
+    summary="awgov Policy Decision Point portable preferences: mode, ask TTL, "
+            "open-ask cap, extra grants, and one-way extra denies (permits, "
+            "signed receipts, tokens, and local policy/audit paths stay home)",
+    synced_keys=frozenset({
+        "version", "mode", "ask_ttl_s", "max_open_asks",
+        "audit_enabled", "extra_grants", "extra_denies",
+    }),
+    secret_keys=frozenset({
+        "permits", "receipts", "tokens", "signing_key", "private_key", "secret",
+    }),
+    home_subkeys={},
+    union_arrays=(("extra_grants",), ("extra_denies",)),
+    one_way=frozenset({"extra_denies"}),
+    deep=True,
+    strict_inbound=True,
+    locate=awgov_config_path,
+    hookable=False,
+)
+
+
+#: Env override for the local custom-domains registry file (never synced).
+CUSTOM_DOMAINS_FILE_ENV = "AWSETTINGS_DOMAINS_FILE"
+
+#: Safe token shape for user-defined domain names (no slashes, spaces, or dots).
+CUSTOM_DOMAIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+#: Hub namespace prefix so custom domains can never collide with platform namespaces.
+CUSTOM_NAMESPACE_PREFIX = "custom_"
+
+#: Mandatory baseline secret-key floor enforced on EVERY user-defined custom domain,
+#: in both directions (redact and merge), regardless of what domains.json declares.
+CUSTOM_SECRET_FLOOR = frozenset({
+    "token",
+    "tokens",
+    "api_key",
+    "apiKey",
+    "secret",
+    "password",
+    "private_key",
+    "signing_key",
+    "oauth_creds",
+    "credentials",
+    "auth",
+    "env",
+    "bearer_file",
+})
+
+
+def builtin_domains() -> dict[str, Domain]:
+    """The built-in domains shipped with awsettings. Custom domains can never shadow these."""
+    return {
+        "claude": _claude(),
+        "antigravity": ANTIGRAVITY,
+        "awrise": AWRISE,
+        "awgov": AWGOV,
+        "desk": DESK,
+        "mods": MODS,
+        "memory": MEMORY,
+        "companions": COMPANIONS,
+        "aitherzero": AITHERZERO,
+        "darkmatter": DARKMATTER,
+        "worktrees": WORKTREES,
+        "network": NETWORK,
+        "privacy": PRIVACY,
+    }
+
+
+def custom_domains_path() -> Path:
+    """Path to the machine-local custom-domains registry (``~/.awsettings/domains.json``).
+
+    This file stays local and is never synced by any domain.
+    """
+    override = (os.environ.get(CUSTOM_DOMAINS_FILE_ENV) or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    from . import config
+    return config.home() / "domains.json"
+
+
+def _custom_env_var(name: str) -> str:
+    return f"AWSETTINGS_CUSTOM_{name.upper().replace('-', '_')}_FILE"
+
+
+def _make_custom_locator(name: str, raw_path: str) -> Callable[[Path | None], Path]:
+    env_var = _custom_env_var(name)
+    configured = raw_path
+
+    def _locate(root: Path | None = None) -> Path:
+        override = (os.environ.get(env_var) or "").strip()
+        if override:
+            return Path(override).expanduser().resolve()
+        return Path(configured).expanduser().resolve()
+
+    return _locate
+
+
+def _str_list(value: object, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError(f"{field_name} must be a list of strings")
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} entries must be non-empty strings")
+        s = item.strip()
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _parse_home_subkeys(raw: object) -> dict[str, frozenset[str]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("home_subkeys must be an object mapping top-level key -> list of subkeys")
+    out: dict[str, frozenset[str]] = {}
+    for top, subs in raw.items():
+        if not isinstance(top, str) or not top.strip():
+            raise ValueError("home_subkeys top-level keys must be non-empty strings")
+        parsed = _str_list(subs, f"home_subkeys[{top!r}]")
+        if parsed:
+            out[top.strip()] = frozenset(parsed)
+    return out
+
+
+def _parse_union_arrays(raw: object) -> tuple[tuple[str, ...], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("union_arrays must be a list of dotted paths or segment lists")
+    paths: list[tuple[str, ...]] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            segs = tuple(s.strip() for s in entry.split(".") if s.strip())
+            if not segs or len(segs) != len(entry.split(".")):
+                raise ValueError(f"invalid union_arrays path {entry!r}")
+        elif isinstance(entry, (list, tuple)):
+            segs = tuple(_str_list(entry, "union_arrays"))
+            if not segs:
+                raise ValueError("union_arrays path must not be empty")
+        else:
+            raise ValueError(f"invalid union_arrays entry {entry!r}")
+        if segs not in paths:
+            paths.append(segs)
+    return tuple(paths)
+
+
+def _normalise_custom_spec(
+    name: str,
+    spec: object,
+    *,
+    builtins: set[str] | None = None,
+    strict_overlap: bool = False,
+) -> tuple[str, Domain, dict]:
+    """Validate a declarative custom domain spec and return ``(name, Domain, canonical_dict)``."""
+    key = (name or "").strip().lower()
+    if not CUSTOM_DOMAIN_NAME_RE.fullmatch(key):
+        raise ValueError(
+            f"invalid custom domain name {name!r}: must match ^[a-z][a-z0-9_-]{{0,63}}$"
+        )
+    reserved = builtins if builtins is not None else set(builtin_domains())
+    if key in reserved:
+        raise ValueError(f"cannot shadow built-in domain {key!r}")
+    if not isinstance(spec, dict):
+        raise ValueError(f"custom domain {key!r} spec must be a JSON object")
+
+    raw_path = spec.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError(f"custom domain {key!r} requires a non-empty 'path'")
+    raw_path = raw_path.strip()
+
+    raw_synced = _str_list(spec.get("synced_keys"), "synced_keys")
+    raw_secret = _str_list(spec.get("secret_keys"), "secret_keys")
+    secret_keys = CUSTOM_SECRET_FLOOR | frozenset(raw_secret)
+
+    overlap = sorted(set(raw_synced) & secret_keys)
+    if overlap and strict_overlap:
+        raise ValueError(
+            f"cannot include protected secret key(s) in synced_keys: {', '.join(overlap)}"
+        )
+    synced_list = [k for k in raw_synced if k not in secret_keys]
+    if not synced_list:
+        raise ValueError(f"custom domain {key!r} requires at least one non-secret synced_keys entry")
+    synced_keys = frozenset(synced_list)
+
+    home_subkeys = _parse_home_subkeys(spec.get("home_subkeys"))
+    union_arrays = _parse_union_arrays(spec.get("union_arrays"))
+    for upath in union_arrays:
+        if upath[0] in secret_keys:
+            raise ValueError(f"union_arrays path {'.'.join(upath)!r} targets a secret key")
+        if upath[0] not in synced_keys:
+            raise ValueError(
+                f"union_arrays path {'.'.join(upath)!r} must start with a key in synced_keys"
+            )
+    one_way_list = _str_list(spec.get("one_way"), "one_way")
+    one_way = frozenset(one_way_list)
+    deep = bool(spec.get("deep", False))
+    summary = str(spec.get("summary") or f"custom domain ({raw_path})").strip()
+
+    dom = Domain(
+        name=key,
+        namespace=f"{CUSTOM_NAMESPACE_PREFIX}{key}",
+        summary=summary,
+        synced_keys=synced_keys,
+        secret_keys=secret_keys,
+        home_subkeys=home_subkeys,
+        union_arrays=union_arrays,
+        one_way=one_way,
+        deep=deep,
+        strict_inbound=True,
+        locate=_make_custom_locator(key, raw_path),
+        hookable=False,
+        opaque=False,
+        custom=True,
+    )
+    canonical = {
+        "path": raw_path,
+        "summary": summary,
+        "synced_keys": synced_list,
+        "secret_keys": sorted(set(raw_secret)),
+        "home_subkeys": {k: sorted(v) for k, v in sorted(home_subkeys.items())},
+        "union_arrays": [".".join(p) for p in union_arrays],
+        "one_way": sorted(one_way),
+        "deep": deep,
+    }
+    return key, dom, canonical
+
+
+def _extract_registry_entries(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    nested = raw.get("domains")
+    if isinstance(nested, dict):
+        return nested
+    # Also tolerate a hand-edited flat map {name: {path: ..., synced_keys: ...}}.
+    return {
+        k: v for k, v in raw.items()
+        if isinstance(k, str) and isinstance(v, dict) and "path" in v
+    }
+
+
+def load_custom_domains() -> dict[str, Domain]:
+    """Load declarative custom domains from ``~/.awsettings/domains.json``.
+
+    Fail-closed: malformed registry files or invalid entries are ignored rather than
+    breaking built-in domains, and built-in domains can never be shadowed.
+    """
+    import json
+
+    path = custom_domains_path()
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    entries = _extract_registry_entries(raw)
+    if not entries:
+        return {}
+    builtins = set(builtin_domains())
+    loaded: dict[str, Domain] = {}
+    for name, spec in entries.items():
+        try:
+            key, dom, _ = _normalise_custom_spec(
+                name, spec, builtins=builtins, strict_overlap=False
+            )
+        except ValueError:
+            continue
+        loaded[key] = dom
+    return loaded
+
+
+def save_custom_domain(name: str, spec: dict, *, overwrite: bool = False) -> Domain:
+    """Validate and persist a custom domain into ``~/.awsettings/domains.json``."""
+    from .store import read_json, write_json
+
+    key, dom, canonical = _normalise_custom_spec(name, spec, strict_overlap=True)
+    path = custom_domains_path()
+    data = read_json(path)
+    existing = dict(_extract_registry_entries(data))
+    if key in existing and not overwrite:
+        raise ValueError(f"custom domain {key!r} already exists (pass --force to overwrite)")
+    existing[key] = canonical
+    write_json(path, {"version": 1, "domains": dict(sorted(existing.items()))})
+    return dom
+
+
+def remove_custom_domain(name: str) -> bool:
+    """Remove a custom domain from ``~/.awsettings/domains.json``. Refuses built-ins."""
+    from .store import read_json, write_json
+
+    key = (name or "").strip().lower()
+    if key in builtin_domains():
+        raise ValueError(f"cannot remove built-in domain {key!r}")
+    path = custom_domains_path()
+    if not path.is_file():
+        return False
+    data = read_json(path)
+    existing = dict(_extract_registry_entries(data))
+    if key not in existing:
+        return False
+    existing.pop(key)
+    write_json(path, {"version": 1, "domains": dict(sorted(existing.items()))})
+    return True
+
+
+def all_domains() -> dict[str, Domain]:
+    # Built-ins are merged last so a hand-edited domains.json can never shadow them.
+    return {**load_custom_domains(), **builtin_domains()}
 
 
 def get_domain(name: str | None) -> Domain:

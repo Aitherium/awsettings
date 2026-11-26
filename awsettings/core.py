@@ -308,6 +308,67 @@ def filter_records(value: Any, fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: Executors safe to carry between machines in the `awrise` domain. Local shell,
+#: python, http and awrun jobs carry host paths or host authority and stay home.
+PORTABLE_AWRISE_EXECUTORS = frozenset({"agent", "session"})
+#: Session permission modes accepted on arrival (mirrors awrise.executors.PERMISSION_MODES).
+PORTABLE_AWRISE_PERMISSION_MODES = frozenset({"default", "acceptEdits", "plan"})
+#: Portable spec fields of an awrise job. Local paths (`cwd`, `bearer_file`, `receipt`),
+#: systemd units (`wake`), and per-machine run history (`last_*`, `consecutive_failures`,
+#: `why_*`, `held_*`, timestamps) never travel in either direction.
+PORTABLE_AWRISE_JOB_FIELDS = frozenset({
+    "every",
+    "interval_s",
+    "at",
+    "executor",
+    "run",
+    "timeout_s",
+    "missed",
+    "enabled",
+    "permission_mode",
+    "report",
+    "predict",
+    "detach",
+    "park_after",
+    "wake_required",
+})
+AWRISE_REPORT_FIELDS = frozenset({"relay", "card_after"})
+
+
+def portable_awrise_jobs(jobs: Any) -> dict[str, Any]:
+    """Only portable agent/session awrise jobs with machine-local fields stripped.
+
+    Applied on the way out AND on arrival so a profile can never inject a shell,
+    python, http, or awrun command, a ``bearer_file`` path, a ``cwd``, or an unsafe
+    ``permission_mode`` onto another machine.
+    """
+    if not isinstance(jobs, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for jid, rec in jobs.items():
+        if not isinstance(jid, str) or not _RECORD_ID.match(jid) or not isinstance(rec, dict):
+            continue
+        if rec.get("executor") not in PORTABLE_AWRISE_EXECUTORS:
+            continue
+        pm = rec.get("permission_mode")
+        if pm is not None and pm not in PORTABLE_AWRISE_PERMISSION_MODES:
+            continue
+        kept: dict[str, Any] = {}
+        for field in PORTABLE_AWRISE_JOB_FIELDS:
+            if field not in rec:
+                continue
+            val = rec[field]
+            if field == "report" and isinstance(val, dict):
+                val = {rk: copy.deepcopy(rv) for rk, rv in val.items()
+                       if rk in AWRISE_REPORT_FIELDS}
+            else:
+                val = copy.deepcopy(val)
+            kept[field] = val
+        if kept:
+            out[jid] = kept
+    return out
+
+
 def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
     """The snapshot that may leave this machine. Never mutates the input."""
     dom = _domain(domain)
@@ -319,6 +380,10 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
             v = {sk: sv for sk, sv in v.items() if sk not in dom.home_subkeys[k]}
         if k in dom.record_fields:
             v = filter_records(v, dom.record_fields[k])
+        if k in dom.job_keys:
+            v = portable_awrise_jobs(v)
+            if not v:
+                continue
         if k in dom.hook_keys:
             v = portable_hooks(v)
             if not v:
@@ -332,6 +397,10 @@ def redact(settings: dict[str, Any], *, domain: Any = None) -> dict[str, Any]:
         env = portable_env(settings.get("env"))
         if env:
             out["env"] = env
+    for path, pred in (getattr(dom, "union_filters", None) or {}).items():
+        cur = _get(out, path)
+        if isinstance(cur, list):
+            _set(out, path, [x for x in cur if pred(x)])
     return out
 
 
@@ -417,6 +486,12 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
             v = filter_records(v, dom.record_fields[k])
             if not v:
                 continue
+        if k in dom.job_keys:
+            # Refused on arrival exactly as on the way out: only portable agent/session
+            # jobs with allowlisted fields land; local shell wakes and run history stay home.
+            v = portable_awrise_jobs(v)
+            if not v:
+                continue
         if k in dom.hook_keys:
             # Refused on arrival exactly as on the way out: an unmarked hook in a
             # profile is a command somebody else chose for this machine.
@@ -447,12 +522,16 @@ def merge(local: dict[str, Any], remote: dict[str, Any], *,
         else:
             out[k] = copy.deepcopy(v)
 
+    union_filters = getattr(dom, "union_filters", None) or {}
     for path in dom.union_arrays:
         lv, rv = _get(local, path), _get(remote, path)
         if lv is None and rv is None:
             continue
         lv = lv if isinstance(lv, list) else []
         rv = rv if isinstance(rv, list) else []
+        pred = union_filters.get(path)
+        if pred is not None and path[-1] not in dom.one_way:
+            rv = [x for x in rv if pred(x)]
         if prune_denies and path[-1] in dom.one_way:
             union = list(rv)
         else:

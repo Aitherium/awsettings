@@ -39,7 +39,14 @@ from .backends import probe as probe_backend
 from .backends import probe_self_test as backends_probe_self_test
 from .backends import self_test as backends_self_test
 from .core import SECRET_KEYS, diff_summary, merge, redact
-from .domains import all_domains, claude_namespace, get_domain
+from .domains import (
+    all_domains,
+    claude_namespace,
+    custom_domains_path,
+    get_domain,
+    remove_custom_domain,
+    save_custom_domain,
+)
 from .hooks import install_to, installed, uninstall_from
 from .profile import ProfileRejectedError, missing_paths, resolve
 from .store import (
@@ -165,7 +172,38 @@ def _plugin_trust(backend) -> dict:
             "known_marketplaces": known_marketplaces()}
 
 
+def _run_all_domains(args, fn) -> int:
+    """Run ``status``, ``pull``, or ``push`` across every present non-opaque user domain.
+
+    Returns 0 when every domain succeeded, else the highest non-zero exit code.
+    """
+    rc = 0
+    for name, dom in sorted(all_domains().items()):
+        if dom.opaque or name == "claude":
+            continue
+        target = dom.locate(None)
+        if args.cmd == "push" and not target.is_file():
+            continue
+        sub_args = argparse.Namespace(**vars(args))
+        sub_args.domain = name
+        sub_args.all_domains = False
+        if not args.quiet:
+            print(f"[{name}]")
+        try:
+            code = fn(sub_args)
+        except UntrustedProfileError as exc:
+            print(f"REFUSED [{name}]: {exc}")
+            code = 2
+        except CouldNotRunError as exc:
+            print(f"DEAD [{name}]: {exc}")
+            code = 2
+        rc = max(rc, code)
+    return rc
+
+
 def cmd_status(args) -> int:
+    if getattr(args, "all_domains", False):
+        return _run_all_domains(args, cmd_status)
     dom = _dom(args)
     if dom.opaque:
         from .hostfile import cmd_status as opaque_status
@@ -291,6 +329,8 @@ def cmd_enroll(args) -> int:
 
 
 def cmd_pull(args) -> int:
+    if getattr(args, "all_domains", False):
+        return _run_all_domains(args, cmd_pull)
     dom = _dom(args)
     if dom.opaque:
         from .hostfile import cmd_pull as opaque_pull
@@ -331,6 +371,8 @@ def cmd_pull(args) -> int:
 
 
 def cmd_push(args) -> int:
+    if getattr(args, "all_domains", False):
+        return _run_all_domains(args, cmd_push)
     dom = _dom(args)
     stamp = _stamp(dom, args)
     if args.debounce:
@@ -572,14 +614,75 @@ def cmd_preflight(args) -> int:
     return 1
 
 
+def _csv_items(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for raw in values or []:
+        for part in raw.split(","):
+            s = part.strip()
+            if s and s not in out:
+                out.append(s)
+    return out
+
+
 def cmd_domains(args) -> int:
-    """Which files this can sync, and where each one lives on THIS machine."""
+    """List domains, or add/remove declarative custom domains in ~/.awsettings/domains.json."""
+    action = getattr(args, "domains_action", None)
+    if action == "add":
+        home_subkeys: dict[str, list[str]] = {}
+        for item in _csv_items(getattr(args, "home_subkey", None)):
+            if "." not in item:
+                print(f"REFUSED: --home-subkey {item!r} must have 'top.sub' form")
+                return 1
+            top, sub = item.split(".", 1)
+            top, sub = top.strip(), sub.strip()
+            if not top or not sub:
+                print(f"REFUSED: --home-subkey {item!r} must have 'top.sub' form")
+                return 1
+            home_subkeys.setdefault(top, [])
+            if sub not in home_subkeys[top]:
+                home_subkeys[top].append(sub)
+        spec = {
+            "path": args.file,
+            "summary": args.summary or "",
+            "synced_keys": _csv_items(args.sync),
+            "secret_keys": _csv_items(args.secret),
+            "home_subkeys": home_subkeys,
+            "union_arrays": _csv_items(args.union),
+            "one_way": _csv_items(args.one_way),
+            "deep": bool(args.deep),
+        }
+        try:
+            dom = save_custom_domain(args.name, spec, overwrite=bool(args.force))
+        except ValueError as exc:
+            print(f"REFUSED: {exc}")
+            return 1
+        if not args.quiet:
+            print(f"added custom domain {dom.name!r} -> {dom.locate(None)}")
+            print(f"  namespace: {dom.namespace}")
+            print(f"  synced:    {', '.join(sorted(dom.synced_keys))}")
+            print(f"  registry:  {custom_domains_path()}")
+        return 0
+
+    if action == "remove":
+        try:
+            removed = remove_custom_domain(args.name)
+        except ValueError as exc:
+            print(f"REFUSED: {exc}")
+            return 1
+        if not removed:
+            print(f"REFUSED: no custom domain named {args.name!r}")
+            return 1
+        if not args.quiet:
+            print(f"removed custom domain {args.name.strip().lower()!r} from {custom_domains_path()}")
+        return 0
+
     rows = []
     for name, dom in sorted(all_domains().items()):
         path = dom.locate(_root(args))
         rows.append({
             "domain": name, "namespace": _namespace(dom, args), "summary": dom.summary,
             "path": str(path), "present": path.is_file(),
+            "custom": bool(getattr(dom, "custom", False)),
             "stays_home": sorted(dom.secret_keys) + sorted(
                 f"{k}.{s}" for k, subs in dom.home_subkeys.items() for s in subs),
         })
@@ -588,7 +691,8 @@ def cmd_domains(args) -> int:
         return 0
     for row in rows:
         mark = "present" if row["present"] else "absent"
-        print(f"{row['domain']:<8} {row['summary']}")
+        tag = " [custom]" if row["custom"] else ""
+        print(f"{row['domain']:<8} {row['summary']}{tag}")
         print(f"         {row['path']} ({mark})")
         print(f"         stays home: {', '.join(row['stays_home']) or 'nothing'}")
     return 0
@@ -921,6 +1025,165 @@ def self_test() -> int:
     from .domains import claude_namespace as _ns
     if _ns(None) == _ns(Path(tempfile.gettempdir())):
         problems.append("user scope and project scope share one hub namespace")
+
+    # --- the antigravity domain: permission grants union, hostname/creds stay home
+    ag = get_domain("antigravity")
+    ag_here = {
+        "plugins": {"swarm": {"enabled": True}},
+        "oauth_creds": {"token": "secret"},
+        "userSettings": {
+            "remoteControlHostname": "box-a",
+            "globalPermissionGrants": {"allow": ["mcp(aitheros_aitheros/atlas_board)"],
+                                       "deny": ["command(rm -rf)"]},
+        },
+    }
+    ag_sent = redact(ag_here, domain=ag)
+    if "oauth_creds" in ag_sent or "remoteControlHostname" in ag_sent.get("userSettings", {}):
+        problems.append("antigravity: credentials or remoteControlHostname left the machine")
+    ag_both = merge(
+        ag_here,
+        {"userSettings": {
+            "remoteControlHostname": "box-b",
+            "globalPermissionGrants": {"allow": ["mcp(aitheros_aitheros/decisions_list)"],
+                                       "deny": []},
+        }},
+        domain=ag,
+    )
+    ag_grants = ag_both.get("userSettings", {}).get("globalPermissionGrants", {})
+    if sorted(ag_grants.get("allow", [])) != [
+        "mcp(aitheros_aitheros/atlas_board)",
+        "mcp(aitheros_aitheros/decisions_list)",
+    ]:
+        problems.append("antigravity: globalPermissionGrants.allow replaced instead of unioning")
+    if ag_grants.get("deny") != ["command(rm -rf)"]:
+        problems.append("antigravity: globalPermissionGrants.deny was dropped on default pull")
+    if ag_both.get("userSettings", {}).get("remoteControlHostname") != "box-a":
+        problems.append("antigravity: arriving remoteControlHostname overwrote local hostname")
+
+    # --- the awrise domain: portable agent/session jobs only, shell/paths stay home
+    awr = get_domain("awrise")
+    awr_here = {
+        "jobs": {
+            "local-shell": {"executor": "shell", "run": "C:/wakes/local.cmd", "every": "5m"},
+            "daily-atlas": {
+                "executor": "agent",
+                "run": "atlas daily audit",
+                "every": "1d",
+                "at": "14:00",
+                "cwd": "C:/repo",
+                "bearer_file": "C:/secret",
+                "last_state": "success",
+                "report": {"relay": "#decisions", "card_after": 1},
+            },
+        }
+    }
+    awr_sent = redact(awr_here, domain=awr)
+    if "local-shell" in awr_sent.get("jobs", {}):
+        problems.append("awrise: a host-local shell job left the machine")
+    sent_job = awr_sent.get("jobs", {}).get("daily-atlas", {})
+    if any(k in sent_job for k in ("cwd", "bearer_file", "last_state")):
+        problems.append("awrise: cwd, bearer_file, or run history left the machine")
+    awr_both = merge(
+        awr_here,
+        {"jobs": {
+            "injected-shell": {"executor": "shell", "run": "evil"},
+            "unsafe-session": {"executor": "session", "permission_mode": "bypassPermissions",
+                               "run": "evil"},
+            "daily-atlas": {"executor": "agent", "run": "atlas updated", "cwd": "/evil",
+                            "bearer_file": "/etc/shadow"},
+        }},
+        domain=awr,
+    )
+    if "injected-shell" in awr_both.get("jobs", {}) or "unsafe-session" in awr_both.get("jobs", {}):
+        problems.append("awrise: a shell job or unsafe permission_mode was accepted on arrival")
+    if "local-shell" not in awr_both.get("jobs", {}):
+        problems.append("awrise: pull dropped a local shell job")
+    merged_job = awr_both.get("jobs", {}).get("daily-atlas", {})
+    if merged_job.get("run") != "atlas updated" or merged_job.get("cwd") != "C:/repo":
+        problems.append("awrise: merge did not preserve local cwd while updating portable spec")
+
+    # --- the awgov domain: extra_denies one-way, permits/receipts/paths stay home
+    gov = get_domain("awgov")
+    gov_here = {
+        "version": 1,
+        "mode": "enforce",
+        "policy_path": "C:/repo/config/agent_policy.yaml",
+        "permits": {"p1": {"max_price": 2.0}},
+        "extra_grants": ["read:**"],
+        "extra_denies": ["mcp:external:bulk_send"],
+    }
+    gov_sent = redact(gov_here, domain=gov)
+    if "policy_path" in gov_sent or "permits" in gov_sent:
+        problems.append("awgov: local policy_path or permits left the machine")
+    gov_both = merge(
+        gov_here,
+        {"mode": "enforce", "policy_path": "/evil/policy.yaml", "receipts": {"r": 1},
+         "extra_grants": ["fleet:read:**"], "extra_denies": []},
+        domain=gov,
+    )
+    if "receipts" in gov_both or gov_both.get("policy_path") != gov_here["policy_path"]:
+        problems.append("awgov: arriving receipts or policy_path overwrote local state")
+    if sorted(gov_both.get("extra_grants", [])) != ["fleet:read:**", "read:**"]:
+        problems.append("awgov: extra_grants replaced instead of unioning")
+    if gov_both.get("extra_denies") != ["mcp:external:bulk_send"]:
+        problems.append("awgov: extra_denies was dropped on default pull")
+
+    # --- custom domains: declarative, secret floor, no built-in shadowing --
+    with tempfile.TemporaryDirectory() as td:
+        prev_custom = os.environ.get("AWSETTINGS_DOMAINS_FILE")
+        os.environ["AWSETTINGS_DOMAINS_FILE"] = str(Path(td) / "domains.json")
+        try:
+            shadow_refused = False
+            try:
+                save_custom_domain("claude", {"path": str(Path(td) / "c.json"),
+                                              "synced_keys": ["theme"]})
+            except ValueError:
+                shadow_refused = True
+            if not shadow_refused:
+                problems.append("custom domain was allowed to shadow built-in 'claude'")
+
+            secret_refused = False
+            try:
+                save_custom_domain("mytool", {"path": str(Path(td) / "m.json"),
+                                              "synced_keys": ["theme", "token"]})
+            except ValueError:
+                secret_refused = True
+            if not secret_refused:
+                problems.append("custom domain was allowed to put floor secret 'token' in synced_keys")
+
+            save_custom_domain("mytool", {
+                "path": str(Path(td) / "m.json"),
+                "synced_keys": ["theme", "rules"],
+                "union_arrays": ["rules.allow", "rules.deny"],
+                "one_way": ["deny"],
+                "deep": True,
+            })
+            cdom = get_domain("mytool")
+            if not cdom.strict_inbound or cdom.hookable or cdom.namespace != "custom_mytool":
+                problems.append("custom domain violated strict_inbound/hookable/namespace invariant")
+            c_here = {"theme": "dark", "token": "sk-secret",
+                      "rules": {"allow": ["a"], "deny": ["d1"]}}
+            c_sent = redact(c_here, domain=cdom)
+            if "token" in c_sent or c_sent.get("theme") != "dark":
+                problems.append("custom domain leaked floor secret key or dropped synced key")
+            c_both = merge(
+                c_here,
+                {"theme": "light", "api_key": "planted", "unknown_key": 1,
+                 "rules": {"allow": ["b"], "deny": []}},
+                domain=cdom,
+            )
+            if "api_key" in c_both or "unknown_key" in c_both:
+                problems.append("custom domain accepted floor secret or unknown key on arrival")
+            if sorted(c_both["rules"]["allow"]) != ["a", "b"] or c_both["rules"]["deny"] != ["d1"]:
+                problems.append("custom domain failed union_arrays or one_way deny protection")
+            if not remove_custom_domain("mytool"):
+                problems.append("remove_custom_domain did not remove 'mytool'")
+        finally:
+            if prev_custom is None:
+                os.environ.pop("AWSETTINGS_DOMAINS_FILE", None)
+            else:
+                os.environ["AWSETTINGS_DOMAINS_FILE"] = prev_custom
+
     problems.extend("network: " + p for p in network.self_test())
 
     if problems:
@@ -997,7 +1260,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="awsettings",
                                  description=__doc__.splitlines()[0])
     ap.add_argument("--version", action="version", version=f"awsettings {__version__}")
-    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--self-test", "--selftest", dest="self_test", action="store_true")
     ap.add_argument("--root", help="project root (default: cwd)")
     ap.add_argument("--user", action="store_true",
                     help="act on the user-level settings instead of a project's")
@@ -1009,9 +1272,34 @@ def main(argv: list[str] | None = None) -> int:
                          "default: claude)")
     sub = ap.add_subparsers(dest="cmd")
 
-    sub.add_parser("status")
+    p = sub.add_parser("status")
+    p.add_argument("--all", dest="all_domains", action="store_true",
+                   help="check status across every non-opaque user domain")
     p = sub.add_parser("domains")
     p.add_argument("--json", action="store_true")
+    dsub = p.add_subparsers(dest="domains_action")
+    p_dlist = dsub.add_parser("list", help="list built-in and custom domains")
+    p_dlist.add_argument("--json", action="store_true")
+    p_dadd = dsub.add_parser("add", help="register a declarative custom user domain")
+    p_dadd.add_argument("name", help="domain name (lowercase letters, digits, - or _)")
+    p_dadd.add_argument("--file", required=True, help="path to the JSON settings file (supports ~)")
+    p_dadd.add_argument("--sync", action="append", required=True, metavar="KEY[,KEY...]",
+                        help="top-level keys to sync (comma-separated or repeatable)")
+    p_dadd.add_argument("--secret", action="append", default=[], metavar="KEY[,KEY...]",
+                        help="additional top-level secret keys that stay home")
+    p_dadd.add_argument("--home-subkey", action="append", default=[], metavar="TOP.SUB",
+                        help="nested subkey that stays home both ways (repeatable)")
+    p_dadd.add_argument("--union", action="append", default=[], metavar="PATH",
+                        help="dotted array path to union instead of replacing (repeatable)")
+    p_dadd.add_argument("--one-way", action="append", default=[], metavar="SEG",
+                        help="union array leaf name that only grows unless --prune-denies")
+    p_dadd.add_argument("--deep", action="store_true",
+                        help="merge nested objects leaf by leaf")
+    p_dadd.add_argument("--summary", default="", help="short human description of this domain")
+    p_dadd.add_argument("--force", action="store_true",
+                        help="overwrite an existing custom domain of the same name")
+    p_drm = dsub.add_parser("remove", help="remove a user-defined custom domain")
+    p_drm.add_argument("name", help="custom domain name to remove")
     p = sub.add_parser("get")
     p.add_argument("path", nargs="?", default="",
                    help='dotted key path, e.g. voice.volume or actors."mcp:speak".volume')
@@ -1019,6 +1307,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("path", help="dotted key path")
     p.add_argument("value", help="a JSON value: 0.4, true, \"nova\", null")
     p = sub.add_parser("pull")
+    p.add_argument("--all", dest="all_domains", action="store_true",
+                   help="pull every non-opaque user domain in one pass")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--host",
                    help="aitherzero domain: restore THIS host's copy (default: this "
@@ -1034,6 +1324,8 @@ def main(argv: list[str] | None = None) -> int:
                         "from (repeatable; also $AWSETTINGS_TRUSTED_BACKUP_REPOS). A repo "
                         "named only by the synced index is never fetched automatically.")
     p = sub.add_parser("push")
+    p.add_argument("--all", dest="all_domains", action="store_true",
+                   help="push every present non-opaque user domain in one pass")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--debounce", action="store_true")
     p.add_argument("--sign", action="store_true",
