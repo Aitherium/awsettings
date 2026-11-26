@@ -171,7 +171,7 @@ ALLOW_CASES = [
     "adk chat atlas",
     "curl -s http://127.0.0.1:8200/ops",
     "curl -sk https://127.0.0.1:8150/health",
-    "wsl -d awnix -u root podman exec aitheros-genesis-a curl -sk https://localhost:8001/health",
+    "wsl -d awnix -u root podman exec svc-genesis-a curl -sk https://localhost:8001/health",
     "ffprobe -v error -show_streams in.mp4",
     "ffmpeg -i in.mp4 -f null -",
     "python - <<'PY'\nprint(sum(1 for l in open('x') if 'a' in l))\nPY",

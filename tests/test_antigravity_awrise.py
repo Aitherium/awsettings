@@ -167,7 +167,7 @@ def test_awrise_redact_keeps_shell_jobs_paths_and_history_home():
                 "run": "https://127.0.0.1:8099/ping",
                 "bearer_file": "C:\\secret",
             },
-            "aitheros-intel-triage-overhaul": {
+            "intel-triage-overhaul": {
                 "executor": "agent",
                 "run": "atlas Run daily competitive intel and triage",
                 "every": "1d",
@@ -176,10 +176,10 @@ def test_awrise_redact_keeps_shell_jobs_paths_and_history_home():
                 "timeout_s": 900,
                 "enabled": True,
                 "missed": "catch_up_once",
-                "cwd": "C:\\AitherOS-Fresh",
-                "bearer_file": "C:\\Users\\wzns\\.aither\\harness_token",
-                "receipt": "C:\\Users\\wzns\\.aither\\last.json",
-                "wake": "aither-vllm.service",
+                "cwd": "C:\\repo",
+                "bearer_file": "C:\\Users\\alice\\.aither\\harness_token",
+                "receipt": "C:\\Users\\alice\\.aither\\last.json",
+                "wake": "local-llm.service",
                 "last_state": "success",
                 "consecutive_failures": 2,
                 "report": {"relay": "#decisions", "card_after": 1, "local_only": "drop"},
@@ -187,8 +187,8 @@ def test_awrise_redact_keeps_shell_jobs_paths_and_history_home():
         }
     }
     sent = redact(local, domain=AWRISE)
-    assert set(sent["jobs"]) == {"aitheros-intel-triage-overhaul"}
-    job = sent["jobs"]["aitheros-intel-triage-overhaul"]
+    assert set(sent["jobs"]) == {"intel-triage-overhaul"}
+    job = sent["jobs"]["intel-triage-overhaul"]
     assert job["executor"] == "agent"
     assert job["at"] == "14:00"
     assert job["report"] == {"relay": "#decisions", "card_after": 1}
@@ -264,7 +264,7 @@ def test_awrise_path_overrides_and_cli_round_trip(tmp_path, monkeypatch):
     jobs_a.write_text(json.dumps({
         "jobs": {
             "win-only": {"executor": "shell", "run": "C:/local.cmd", "every": "5m"},
-            "aitheros-intel": {
+            "daily-intel": {
                 "executor": "agent",
                 "run": "atlas daily intel",
                 "every": "1d",
@@ -288,8 +288,8 @@ def test_awrise_path_overrides_and_cli_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("AWSETTINGS_AWRISE_FILE", str(jobs_b))
     assert cli.main(["--domain", "awrise", "--quiet", "pull"]) == 0
     merged = json.loads(jobs_b.read_text(encoding="utf-8"))
-    assert set(merged["jobs"]) == {"linux-only", "aitheros-intel"}
-    assert merged["jobs"]["aitheros-intel"]["report"] == {"relay": "#decisions", "card_after": 1}
+    assert set(merged["jobs"]) == {"linux-only", "daily-intel"}
+    assert merged["jobs"]["daily-intel"]["report"] == {"relay": "#decisions", "card_after": 1}
 
 
 # --- awgov -------------------------------------------------------------------
